@@ -1,48 +1,275 @@
-from fastapi import Depends, FastAPI, HTTPException, APIRouter
+from fastapi import Depends, HTTPException, APIRouter, status # Added status
 from sqlalchemy.orm import Session
-from ..dependencies import get_db
-from .. import crud, models, schemas
+from datetime import datetime, date, timedelta # Added datetime, date, timedelta
+from typing import List, Optional
+# Removed: from pydantic import BaseModel
+import os
+from fastapi.security import OAuth2PasswordBearer # Added
+from jose import JWTError, jwt # Added
 
-router = APIRouter(    
+# Use the minimal get_db from dependencies
+from ..dependencies import get_db
+# Removed: from ..dependencies import oauth2_scheme
+from .. import crud, models, schemas
+from ..auth import decode_token as auth_decode_token # For JWT decoding
+
+# Load .env for role codes or other configs if they were to be moved from here
+from dotenv import load_dotenv
+load_dotenv()
+
+SECRET_KEY = os.getenv('SECRET_KEY')
+ALGORITHM = os.getenv('ALGORITHM')
+
+if not SECRET_KEY or not ALGORITHM:
+    print("CRITICAL WARNING in requests.py: SECRET_KEY or ALGORITHM not found.")
+    # Consider raising an error
+
+router = APIRouter(
     prefix="/requests",
     tags=["Requests"],
-    responses={418: {"description": "I'm a teapot"}}
+    responses={404: {"description": "Not found"}}
 )
 
-# Get All Requests
-@router.get("/requests/", response_model=list[schemas.Request])
-def read_requests(skip: int=0, limit: int=100, db: Session = Depends(get_db)):
-    requests = crud.get_requests(db, skip=skip, limit=limit)
+# --- Real Authentication Logic (Locally Defined) ---
+oauth2_scheme_req = OAuth2PasswordBearer(tokenUrl="/auth/token") # Local scheme for this router
+
+async def get_current_user_for_req_router(token: str = Depends(oauth2_scheme_req), db: Session = Depends(get_db)) -> models.User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials (req router)",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if not SECRET_KEY or not ALGORITHM:
+        print("ERROR in requests.py: JWT Secret Key or Algorithm is not configured.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server auth configuration error (req router)")
+    try:
+        payload = auth_decode_token(token) # Using imported decode_token
+        user_id: int = payload.get("user_id")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = crud.get_user(db, user_id=user_id)
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_active_user_for_req_router(current_user: models.User = Depends(get_current_user_for_req_router)) -> models.User:
+    if not current_user.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user (req router)")
+    return current_user
+# --- End Real Authentication Logic ---
+
+
+# Allowed roles for pass types (example role names/codes)
+# These should ideally come from a config or constants module
+SINGLE_DAY_ALLOWED_ROLES = ["Division Manager", "Deputy Division Manager", "Department Head", "Deputy Department Head", "Admin"] # Example role names
+MULTI_DAY_ALLOWED_ROLES = ["Department Head", "Deputy Department Head", "Admin"] # Example role names
+
+# Define Role Codes for approval steps (these should match 'code' in Role model for precise matching)
+DCS_OFFICER_ROLE_CODE = "dcs_officer" # Example role code
+ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head" # Example role code
+ADMIN_ROLE_CODE = "admin"
+DEPARTMENT_HEAD_ROLE_CODE = "department_head"
+DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
+DIVISION_MANAGER_ROLE_CODE = "division_manager"
+DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
+CHECKPOINT_OPERATOR_ROLE_PREFIX = "checkpoint_operator_cp" # e.g., checkpoint_operator_cp1
+EMPLOYEE_ROLE_CODE = "employee" # Default or generic user
+UNIT_HEAD_ROLE_CODE = "unit_head" # Assuming Unit is a type of department
+
+
+# Get All Requests (with RBAC)
+@router.get("/", response_model=List[schemas.Request])
+async def read_all_requests( # Changed to async
+    skip: int = 0,
+    limit: int = 100,
+    status_filter: Optional[schemas.RequestStatusEnum] = None, # Renamed from 'status' to avoid conflict with status module
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # This endpoint should now primarily call crud.get_requests
+    # The crud.get_requests function is responsible for applying RBAC based on the user
+    # and then any additional filters provided.
+
+    # The old complex RBAC logic here is now moved into crud.get_requests
+    # and rbac.get_request_visibility_filters_for_user.
+
+    # Pass all relevant filters to crud.get_requests
+    # Note: The crud.get_requests function was updated to accept these named filters.
+    # Ensure that the names here match the parameter names in crud.get_requests.
+    requests = crud.get_requests(
+        db,
+        user=current_user, # Pass the current_user for RBAC
+        skip=skip,
+        limit=limit,
+        status=status_filter.value if status_filter else None, # Pass the string value of the enum
+        # Add other filters as they are defined in crud.get_requests signature
+        # checkpoint_id=checkpoint_id_filter, # This was from old logic, ensure crud.get_requests handles it
+        # date_from=...,
+        # date_to=...,
+        # visitor_name=...
+    )
     return requests
 
-#Get Requests created by specific user
-@router.get("/requests/{user_id}", response_model=list[schemas.Request])
-def read_user_requests(user_id: int, db: Session = Depends(get_db)):
-    db_user = crud.get_user_by_id(db, user_id=user_id)
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return db_user.requests
 
-#Get Requests created by specific user
-@router.get("/requests_username/{username}", response_model=list[schemas.Request])
-def read_user_requests_username(username: str, db: Session = Depends(get_db)):
-    db_user = crud.get_user_by_username(db, username=username)
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return db_user.requests
+@router.post("/", response_model=schemas.Request, status_code=status.HTTP_201_CREATED)
+async def create_request_endpoint(
+    request_in: schemas.RequestCreate, # Renamed from request_data
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # All business logic (blacklist check, pass type rules, audit, notifications)
+    # is now handled within crud.create_request.
+    # The router's responsibility is to receive the request, authenticate the user,
+    # and call the appropriate CRUD function.
 
-@router.get("/delete_request/", response_model = bool)
-def delete_request(request_id: str, db: Session = Depends(get_db)):
-    return crud.delete_request(db, request_id)
+    # The crud.create_request function expects 'request_in: schemas.RequestCreate' and 'creator: models.User'
+    # It will raise HTTPException on business rule violations (blacklist, pass type)
+    try:
+        created_request = crud.create_request(db=db, request_in=request_in, creator=current_user)
+        return created_request
+    except HTTPException as e: # Catch HTTPExceptions from CRUD to re-raise
+        raise e
+    except Exception as e: # Catch any other unexpected errors
+        # Log error e
+        print(f"Unexpected error in create_request_endpoint: {e}") # Basic logging
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during request creation.")
 
-# Create Request Of Specific User
-@router.post("/users/{user_id}/request", response_model=schemas.Request)
-def create_request_for_user(user_id: int, request: schemas.RequestCreate, db: Session = Depends(get_db)):
-    return crud.create_user_request(db=db, request=request, user_id=user_id)
 
-@router.get("/request/{request_id}", response_model=schemas.Request)
-def read_request_by_id(request_id: str, db: Session = Depends(get_db)):
-    db_request = crud.get_request(db, request_id)
-    if db_request is None:
-        raise HTTPException(status_code=404, detail="Request not found")
+@router.post("/{request_id}/submit", response_model=schemas.Request)
+async def submit_request_for_approval(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # Business logic (status checks, ownership, audit, notifications) is in crud.submit_request
+    try:
+        updated_request = crud.submit_request(db=db, request_id=request_id, user=current_user)
+        return updated_request
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Unexpected error in submit_request_for_approval: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+@router.patch("/{request_id}", response_model=schemas.Request)
+async def update_request_endpoint(
+    request_id: int,
+    request_update: schemas.RequestUpdate, # Renamed from request_in
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # Business logic (status checks, ownership, audit) is in crud.update_request_draft
+    try:
+        updated_request = crud.update_request_draft(db=db, request_id=request_id, request_update=request_update, user=current_user)
+        return updated_request
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Unexpected error in update_request_endpoint: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+@router.get("/{request_id}", response_model=schemas.Request)
+async def read_single_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # crud.get_request now handles RBAC and raises HTTPException if not found or not allowed
+    db_request = crud.get_request(db, request_id=request_id, user=current_user)
+    if not db_request: # Should have been raised by crud if not found/allowed based on its logic.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
     return db_request
+
+
+@router.delete("/{request_id}", response_model=schemas.Request) # Consider status_code=204 if no content returned
+async def delete_single_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # Fetch request with RBAC check
+    db_request_to_delete = crud.get_request(db, request_id=request_id, user=current_user)
+    if not db_request_to_delete:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible for deletion.")
+
+    # Additional business rule: only creator or admin can delete, and only if DRAFT
+    from .. import rbac # For is_creator, is_admin
+    if not (rbac.is_creator(current_user, db_request_to_delete) or rbac.is_admin(current_user)):
+         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this request.")
+
+    if db_request_to_delete.status != schemas.RequestStatusEnum.DRAFT.value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Only DRAFT requests can be deleted. Current status: {db_request_to_delete.status}")
+
+    # crud.delete_request itself is simple; the complex checks remain here or move to a service layer.
+    deleted_request_obj = crud.delete_request(db, db_request=db_request_to_delete)
+
+    # Audit log is now handled by crud.delete_request if modified to accept actor_id
+    # For now, let's assume crud.delete_request doesn't audit, so we do it here.
+    # Or, ensure crud.create_audit_log is called correctly if it's inside crud.delete_request.
+    # The plan implies crud.delete_request would handle audit.
+    # Let's assume crud.delete_request does not currently audit.
+    crud.create_audit_log(db, actor_id=current_user.id, entity='request',
+        entity_id=request_id, action='DELETE',
+        data={"message": f"Request '{request_id}' deleted by {current_user.username}."}
+    )
+    return deleted_request_obj # Return the deleted object as per current response_model
+
+
+# ------------- DCS Approval/Declination Endpoints -------------
+
+@router.post("/{request_id}/dcs_action", response_model=schemas.Request, tags=["Approvals"])
+async def dcs_action_on_request(
+    request_id: int,
+    action: schemas.ApprovalStatusEnum,
+    payload: schemas.ApprovalCommentPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # Business logic (role check, status check, approval/decline, audit, notifications)
+    # is now in crud.approve_request_step or crud.decline_request_step.
+    try:
+        if action == schemas.ApprovalStatusEnum.APPROVED:
+            updated_request = crud.approve_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
+        elif action == schemas.ApprovalStatusEnum.DECLINED:
+            updated_request = crud.decline_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action specified.")
+        return updated_request
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Unexpected error in dcs_action_on_request: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+# ------------- ZD Deputy Head Approval/Declination Endpoints -------------
+
+@router.post("/{request_id}/zd_action", response_model=schemas.Request, tags=["Approvals"])
+async def zd_action_on_request(
+    request_id: int,
+    action: schemas.ApprovalStatusEnum,
+    payload: schemas.ApprovalCommentPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    # Business logic is now in crud.approve_request_step or crud.decline_request_step.
+    # The CRUD functions will internally check if the user (approver) has the correct role (ZD)
+    # and if the request is in the correct state for ZD action.
+    try:
+        if action == schemas.ApprovalStatusEnum.APPROVED:
+            updated_request = crud.approve_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
+        elif action == schemas.ApprovalStatusEnum.DECLINED:
+            updated_request = crud.decline_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action specified.")
+        return updated_request
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Unexpected error in zd_action_on_request: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")

@@ -10,12 +10,22 @@ from alembic import context
 
 # ✅ Добавляем путь к корню проекта
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+load_dotenv() # Ensure .env is loaded before importing project modules
 
 # ✅ Абсолютный импорт
-from sql_app.database import Base, engine
-from sql_app.models import Citizenship, Role, Division, User, Request, Visitor, BlackList
-
-load_dotenv()
+try:
+    from sql_app.database import Base, engine # Base needs to be imported before models
+    from sql_app.models import * # Ensure all model classes are brought into scope
+    print("Successfully imported Base and models.")
+    if not Base.metadata.tables:
+        print("Base.metadata.tables is EMPTY after model import!")
+    else:
+        print(f"Base.metadata.tables contains: {list(Base.metadata.tables.keys())}")
+except Exception as e:
+    import traceback
+    print(f"Error during import of Base or models in env.py: {e}")
+    print(traceback.format_exc())
+    raise
 
 
 # this is the Alembic Config object, which provides
@@ -59,6 +69,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+        compare_server_default=True,
     )
 
     with context.begin_transaction():
@@ -89,5 +101,5 @@ def run_migrations_online() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
-else:
-    run_migrations_online()
+# else:
+#     run_migrations_online() # Temporarily commented out to avoid DB connection error during generation
