@@ -4,7 +4,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from sql_app import crud, models, schemas
 from sql_app.database import SessionLocal, engine
-from sql_app.routers import users, requests, visitors, restricted_users, role, division
+# Updated imports for all active routers
+from sql_app.routers import (
+    auth,
+    users,
+    role,
+    departments,
+    requests,
+    blacklist,
+    checkpoints
+)
 from sql_app.dependencies import get_db
 
 models.Base.metadata.create_all(bind=engine)
@@ -27,10 +36,15 @@ app.add_middleware(
 
 
 #------------Separate File APIs------------------>
+app.include_router(auth.router) # Added/Ensured
 app.include_router(users.router)
-app.include_router(division.router)
-app.include_router(requests.router)
-app.include_router(visitors.router)
-app.include_router(restricted_users.router)
 app.include_router(role.router)
+app.include_router(departments.router) # Added
+app.include_router(requests.router)
+app.include_router(blacklist.router) # Added
+app.include_router(checkpoints.router) # Added
+
+# app.include_router(division.router) # Confirmed Removed
+# app.include_router(visitors.router) # Confirmed Removed
+# app.include_router(restricted_users.router) # Confirmed Removed
 
