@@ -1,4 +1,6 @@
 import os # For SECRET_KEY, ALGORITHM
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from jose.exceptions import JWTError # Corrected import name
 from sqlalchemy.orm import Session

@@ -63,7 +63,7 @@ async def get_security_officer_user_local(current_user: models.User = Depends(ge
 # --- End Real Authentication Logic ---
 
 
-@router.get("/", response_model=List[schemas.Blacklist])
+@router.get("/", response_model=List[schemas.BlackList])
 async def read_blacklist_entries(
     skip: int = 0,
     limit: int = 100,
@@ -80,9 +80,9 @@ async def read_blacklist_entries(
     return entries
 
 
-@router.post("/", response_model=schemas.Blacklist, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=schemas.BlackList, status_code=status.HTTP_201_CREATED)
 async def create_blacklist_entry_endpoint(
-    entry_in: schemas.BlacklistCreate,
+    entry_in: schemas.BlackListCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_security_officer_user_local)
 ):

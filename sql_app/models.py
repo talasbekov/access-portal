@@ -1,4 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -71,7 +73,7 @@ class AuditLog(Base):
     action = Column(String)
     actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    data = Column(JSON, nullable=True) # Renamed from metadata to data
+    data = Column(MutableDict.as_mutable(JSONB), nullable=True) # Renamed from metadata to data
 
     actor = relationship("User", back_populates="audit_logs")
 

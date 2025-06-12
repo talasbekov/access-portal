@@ -1,7 +1,11 @@
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
+from fastapi import HTTPException, status
+from datetime import date
+from fastapi.encoders import jsonable_encoder
+from . import models, schemas, auth
+from .routers.requests import ADMIN_ROLE_CODE
 
-from . import models, schemas
 
 # ------------- Department CRUD -------------
 
@@ -130,7 +134,7 @@ def get_user_by_username(db: Session, username: str) -> Optional[models.User]:
     ).filter(models.User.username == username).first()
 
 def authenticate_user(db: Session, username: str, password: str) -> Optional[models.User]:
-    from .. import auth # For verify_password
+    from . import auth # For verify_password
     user = get_user_by_username(db, username=username)
     if not user:
         return None
@@ -150,16 +154,20 @@ def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[models.User]
         selectinload(models.User.department)
     ).offset(skip).limit(limit).all()
 
-def create_user(db: Session, user: schemas.UserCreate) -> models.User:
+def create_user(db: Session, user_in: schemas.UserCreate) -> models.User:
+    # 1) hash the incoming plain‐text password
+    hashed = auth.get_password_hash(user_in.hashed_password)
+
+    # 2) build the User model with hashed_password
     db_user = models.User(
-        username=user.username,
-        full_name=user.full_name,
-        hashed_password=user.hashed_password, # Assuming password is pre-hashed
-        role_id=user.role_id,
-        department_id=user.department_id,
-        email=user.email,
-        phone=user.phone,
-        is_active=user.is_active
+        username       = user_in.username,
+        full_name      = user_in.full_name,
+        email          = user_in.email,
+        phone          = user_in.phone,
+        role_id        = user_in.role_id,
+        department_id  = user_in.department_id,
+        is_active      = user_in.is_active,
+        hashed_password= hashed,
     )
     db.add(db_user)
     db.commit()
@@ -240,7 +248,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End date cannot be before start date.")
 
     duration = end_date_obj - start_date_obj
-    is_multi_day = duration >= timedelta(days=1) # More than 0 days duration means multi-day
+    is_multi_day = duration >= timedelta(days=2) # More than 0 days duration means multi-day
 
     creator_role_code = creator.role.code
     creator_department_type = creator.department.type # This is DepartmentType enum instance
@@ -249,7 +257,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     if is_multi_day: # Multi-day pass
         # Creator must be Department Head or Deputy for any department type that is not a Division.
         # Or Division Manager/Deputy if their department IS a Division (implicitly a higher level).
-        if creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
+        if creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE]:
             can_create = True
         # Implicitly, if a Div Manager creates a multi-day pass for their division, it's allowed.
         # This rule might need refinement: e.g. Dept Heads of depts within a Division.
@@ -260,8 +268,8 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         if creator_role_code in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE] and \
            creator_department_type == models.DepartmentType.DIVISION:
             can_create = True
-        elif creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE] and \
-             creator_department_type != models.DepartmentType.DIVISION: # Dept head of a non-division unit
+        elif creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE] and \
+             creator_department_type != models.DepartmentType.UNIT: # Dept head of a non-division unit
             can_create = True
 
     # Admin override - can create any type of pass
@@ -326,7 +334,7 @@ def get_request(db: Session, request_id: int, user: models.User) -> Optional[mod
     ).filter(models.Request.id == request_id).first()
 
     # RBAC check after fetching
-    from .. import rbac # Import rbac module
+    from . import rbac # Import rbac module
     if request_obj and not rbac.can_user_view_request(db, user, request_obj): # request_obj can be None
         # If object exists but user cannot view
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this request")
@@ -381,7 +389,7 @@ def get_requests(
     # created_by_you: bool = False, # Example of a boolean filter
     # assigned_to_you_for_approval: bool = False # Example
 ) -> List[models.Request]:
-    from .. import rbac # Import rbac module for visibility rules
+    from . import rbac # Import rbac module for visibility rules
     from sqlalchemy import or_ # For OR conditions if needed based on RBAC
     from datetime import date # Ensure date is imported
 
@@ -453,7 +461,7 @@ def update_request_draft(db: Session, request_id: int, request_update: schemas.R
     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
         raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Only DRAFT requests can be updated.")
 
-    from .. import rbac # Import rbac module for creator check
+    from . import rbac # Import rbac module for creator check
     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user): # Allow admin to edit drafts too
         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to update this request.")
 
@@ -489,7 +497,7 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
     if not db_request:
         raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
 
-    from .. import rbac
+    from . import rbac
     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
 
@@ -516,7 +524,7 @@ def approve_request_step(db: Session, request_id: int, approver: models.User, co
     if not db_request:
         raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
 
-    from .. import rbac
+    from . import rbac
     new_status_val = ""
     approval_step: Optional[schemas.ApprovalStepEnum] = None
 
@@ -559,7 +567,7 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
     if not db_request:
         raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
 
-    from .. import rbac
+    from . import rbac
     new_status_val = ""
     approval_step: Optional[schemas.ApprovalStepEnum] = None
 
@@ -597,7 +605,7 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
 
 
 def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
-    from .. import rbac
+    from . import rbac
     from fastapi import status as fastapi_status
 
     if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
@@ -655,12 +663,13 @@ def update_approval(db: Session, db_approval: models.Approval, approval_in: sche
 # ------------- AuditLog CRUD -------------
 
 def create_audit_log(db: Session, actor_id: Optional[int], entity: str, entity_id: int, action: str, data: Optional[dict] = None) -> models.AuditLog:
+    safe_data = jsonable_encoder(data)
     db_audit_log = models.AuditLog(
         actor_id=actor_id,
         entity=entity,
         entity_id=entity_id,
         action=action,
-        data=data
+        data=safe_data
         # timestamp is server_default in model
     )
     db.add(db_audit_log)
@@ -673,8 +682,8 @@ def get_audit_logs(db: Session, skip: int = 0, limit: int = 100) -> List[models.
 
 # ------------- Blacklist CRUD (Refactored) -------------
 
-def create_blacklist_entry(db: Session, entry_in: schemas.BlacklistCreate, adder_id: int) -> models.Blacklist:
-    db_entry = models.Blacklist(
+def create_blacklist_entry(db: Session, entry_in: schemas.BlackListCreate, adder_id: int) -> models.BlackList:
+    db_entry = models.BlackList(
         **entry_in.model_dump(exclude={'added_by'}), # Exclude added_by if present, as we're setting it from adder_id
         added_by=adder_id
         # added_at is server_default
@@ -685,22 +694,22 @@ def create_blacklist_entry(db: Session, entry_in: schemas.BlacklistCreate, adder
     create_audit_log(db, actor_id=adder_id, entity="blacklist", entity_id=db_entry.id, action="CREATE", data={"full_name": db_entry.full_name})
     return db_entry
 
-def get_blacklist_entry(db: Session, entry_id: int) -> Optional[models.Blacklist]:
-    return db.query(models.Blacklist).options(
-        selectinload(models.Blacklist.added_by_user),
-        selectinload(models.Blacklist.removed_by_user)
-    ).filter(models.Blacklist.id == entry_id).first()
+def get_blacklist_entry(db: Session, entry_id: int) -> Optional[models.BlackList]:
+    return db.query(models.BlackList).options(
+        selectinload(models.BlackList.added_by_user),
+        selectinload(models.BlackList.removed_by_user)
+    ).filter(models.BlackList.id == entry_id).first()
 
-def get_blacklist_entries(db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[models.Blacklist]:
-    query = db.query(models.Blacklist).options(
-        selectinload(models.Blacklist.added_by_user),
-        selectinload(models.Blacklist.removed_by_user)
+def get_blacklist_entries(db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[models.BlackList]:
+    query = db.query(models.BlackList).options(
+        selectinload(models.BlackList.added_by_user),
+        selectinload(models.BlackList.removed_by_user)
     )
     if active_only:
-        query = query.filter(models.Blacklist.status == 'ACTIVE')
-    return query.order_by(models.Blacklist.added_at.desc()).offset(skip).limit(limit).all()
+        query = query.filter(models.BlackList.status == 'ACTIVE')
+    return query.order_by(models.BlackList.added_at.desc()).offset(skip).limit(limit).all()
 
-def update_blacklist_entry(db: Session, db_entry: models.Blacklist, entry_in: schemas.BlacklistUpdate, actor_id: Optional[int]) -> models.Blacklist:
+def update_blacklist_entry(db: Session, db_entry: models.BlackList, entry_in: schemas.BlackListUpdate, actor_id: Optional[int]) -> models.BlackList:
     update_data = entry_in.model_dump(exclude_unset=True)
     changed_fields = {}
     for key, value in update_data.items():
@@ -716,18 +725,18 @@ def update_blacklist_entry(db: Session, db_entry: models.Blacklist, entry_in: sc
     return db_entry
 
 def is_person_blacklisted(db: Session, full_name: str, doc_number: Optional[str] = None, citizenship: Optional[str] = None) -> bool:
-    query = db.query(models.Blacklist).filter(
-        models.Blacklist.status == 'ACTIVE',
-        models.Blacklist.full_name == full_name # Consider case-insensitive search here
+    query = db.query(models.BlackList).filter(
+        models.BlacLlist.status == 'ACTIVE',
+        models.BlackList.full_name == full_name # Consider case-insensitive search here
     )
     if doc_number:
-        query = query.filter(models.Blacklist.doc_number == doc_number)
+        query = query.filter(models.BlackList.doc_number == doc_number)
     # Not using citizenship in the check for now as per original logic, but can be added.
     # if citizenship:
-    #     query = query.filter(models.Blacklist.citizenship == citizenship)
+    #     query = query.filter(models.BlackList.citizenship == citizenship)
     return query.first() is not None
 
-def remove_blacklist_entry(db: Session, entry_id: int, remover_id: int) -> Optional[models.Blacklist]:
+def remove_blacklist_entry(db: Session, entry_id: int, remover_id: int) -> Optional[models.BlackList]:
     """Soft deletes a blacklist entry by marking it as INACTIVE."""
     db_entry = get_blacklist_entry(db, entry_id=entry_id)
     if not db_entry:
@@ -746,7 +755,7 @@ def remove_blacklist_entry(db: Session, entry_id: int, remover_id: int) -> Optio
     create_audit_log(db, actor_id=remover_id, entity="blacklist", entity_id=db_entry.id, action="REMOVE", data={"full_name": db_entry.full_name, "status": "INACTIVE"})
     return db_entry
 
-def delete_blacklist_entry(db: Session, db_entry: models.Blacklist, actor_id: Optional[int]) -> models.Blacklist: # This is a hard delete
+def delete_blacklist_entry(db: Session, db_entry: models.BlackList, actor_id: Optional[int]) -> models.BlackList: # This is a hard delete
     # It's often better to soft delete (deactivate) sensitive data like blacklist entries.
     # If hard delete is truly required:
     entry_id = db_entry.id

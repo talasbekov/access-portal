@@ -163,7 +163,7 @@ class UserForApproval(BaseModel): # Simplified User for Approval approver
     class Config:
         orm_mode = True
 
-class UserForBlacklist(BaseModel): # Simplified User for Blacklist user fields
+class UserForBlackList(BaseModel): # Simplified User for BlackList user fields
     id: int
     username: str
     full_name: Optional[str] = None
@@ -300,9 +300,9 @@ class AuditLog(AuditLogInDBBase):
     pass
 
 
-# ------------- Blacklist Schemas (Modified) -------------
+# ------------- BlackList Schemas (Modified) -------------
 
-class BlacklistBase(BaseModel):
+class BlackListBase(BaseModel):
     full_name: str
     doc_type: Optional[str] = None
     doc_number: Optional[str] = None
@@ -310,28 +310,28 @@ class BlacklistBase(BaseModel):
     reason: Optional[str] = None
     status: str = 'ACTIVE'
 
-class BlacklistCreate(BlacklistBase):
+class BlackListCreate(BlackListBase):
     added_by: int # Usually current user
 
-class BlacklistUpdate(BlacklistBase):
+class BlackListUpdate(BlackListBase):
     full_name: Optional[str] = None
     status: Optional[str] = None
     # removed_by and removed_at are usually set by specific actions/endpoints
 
-class BlacklistInDBBase(BlacklistBase):
+class BlackListInDBBase(BlackListBase):
     id: int
     added_by: int
     added_at: datetime
     removed_by: Optional[int] = None
     removed_at: Optional[datetime] = None
-    added_by_user: Optional[UserForBlacklist] = None # Simplified User
-    removed_by_user: Optional[UserForBlacklist] = None # Simplified User
+    added_by_user: Optional[UserForBlackList] = None # Simplified User
+    removed_by_user: Optional[UserForBlackList] = None # Simplified User
 
 
     class Config:
         orm_mode = True
 
-class Blacklist(BlacklistInDBBase):
+class BlackList(BlackListInDBBase):
     pass
 
 
@@ -362,7 +362,7 @@ UserInDBBase.update_forward_refs()
 RequestInDBBase.update_forward_refs()
 Approval.update_forward_refs()
 AuditLogInDBBase.update_forward_refs()
-BlacklistInDBBase.update_forward_refs()
+BlackListInDBBase.update_forward_refs()
 # Notification.update_forward_refs() # If Notification responses include complex nested types that need it.
 # For now, Notification response (Notification) uses UserForRecipient and RequestSmall which are defined before it.
 
