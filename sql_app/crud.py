@@ -203,21 +203,18 @@ def create_request_person(db: Session, request_person: schemas.RequestPersonBase
 
 # ------------- Request CRUD (Modified) -------------
 
-# Role constants for request creation logic (consider moving to rbac.py or constants.py later)
-# These should align with the 'code' field in the Role model.
-DIVISION_MANAGER_ROLE_CODE = "division_manager"
-DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-DEPARTMENT_HEAD_ROLE_CODE = "department_head"
-DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
-# ADMIN_ROLE_CODE = "admin" # Assuming admin can also create any type
+# Role constants for request creation logic are now imported from rbac
+from .. import rbac  # Import rbac to access role codes
 
-# DCS_OFFICER_ROLE_CODE and ZD_DEPUTY_HEAD_ROLE_CODE for notifications
-DCS_OFFICER_ROLE_CODE = "dcs_officer"
-ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head"
-
+# DCS_OFFICER_ROLE_CODE and ZD_DEPUTY_HEAD_ROLE_CODE for notifications are also in rbac
 
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
     from datetime import timedelta, date, datetime # Ensure imports
+    from fastapi import HTTPException, status # Ensure HTTPException and status are available
+
+    # Edge Case: Ensure there is at least one person in the request
+    if not request_in.request_persons:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request must include at least one person.")
 
     # 1. Blacklist Check
     for person_schema in request_in.request_persons:
@@ -247,21 +244,14 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     can_create = False
     if is_multi_day: # Multi-day pass
-        # Creator must be Department Head or Deputy for any department type that is not a Division.
-        # Or Division Manager/Deputy if their department IS a Division (implicitly a higher level).
-        if creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
+        if creator_role_code in [rbac.DEPARTMENT_HEAD_ROLE_CODE, rbac.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
             can_create = True
-        # Implicitly, if a Div Manager creates a multi-day pass for their division, it's allowed.
-        # This rule might need refinement: e.g. Dept Heads of depts within a Division.
-        # Current TS: Multi-day: Creator must be Department Head or Deputy.
     else: # Single-day pass
-        # Creator must be Division Manager or Deputy. Department type must be DIVISION.
-        # Or Department Head/Deputy for departments that are NOT divisions (implicitly lower level).
-        if creator_role_code in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE] and \
+        if creator_role_code in [rbac.DIVISION_MANAGER_ROLE_CODE, rbac.DEPUTY_DIVISION_MANAGER_ROLE_CODE] and \
            creator_department_type == models.DepartmentType.DIVISION:
             can_create = True
-        elif creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE] and \
-             creator_department_type != models.DepartmentType.DIVISION: # Dept head of a non-division unit
+        elif creator_role_code in [rbac.DEPARTMENT_HEAD_ROLE_CODE, rbac.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE] and \
+             creator_department_type != models.DepartmentType.DIVISION:
             can_create = True
 
     # Admin override - can create any type of pass
@@ -304,12 +294,14 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     # 5. Notification (Placeholder - actual user lookup for roles needed)
     # Example: notify DCS officers. This needs a way to find users by role.
-    # dcs_officers = db.query(models.User).join(models.Role).filter(models.Role.code == DCS_OFFICER_ROLE_CODE).all()
-    # for officer in dcs_officers:
-    #    create_notification(db, user_id=officer.id, message=f"New request {db_request.id} pending your review.", request_id=db_request.id)
-    # zd_deputy_heads = db.query(models.User).join(models.Role).filter(models.Role.code == ZD_DEPUTY_HEAD_ROLE_CODE).all()
-    # for zd_head in zd_deputy_heads:
-    #    create_notification(db, user_id=zd_head.id, message=f"New request {db_request.id} created, will require ZD approval if DCS approves.", request_id=db_request.id)
+    if db_request.status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        dcs_officers = get_users_by_role_code(db, rbac.DCS_OFFICER_ROLE_CODE)
+        for officer in dcs_officers:
+           create_notification(db, user_id=officer.id, message=f"New request {db_request.id} submitted, requires DCS review.", request_id=db_request.id)
+
+        zd_deputy_heads = get_users_by_role_code(db, rbac.ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+           create_notification(db, user_id=zd_head.id, message=f"New request {db_request.id} created, pending DCS review.", request_id=db_request.id)
 
     return db_request
 
@@ -502,11 +494,190 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
     db.refresh(db_request)
     create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
 
-    # TODO: Notifications to DCS Officers and ZD Deputy Head (from plan)
-    # dcs_users = db.query(models.User).join(models.Role).filter(models.Role.code == DCS_OFFICER_ROLE_CODE).all()
-    # for dcs_user_notify in dcs_users:
-    #     create_notification(db, user_id=dcs_user_notify.id, message=f"Request {db_request.id} submitted for DCS review.", request_id=db_request.id)
-    # Similar for ZD if needed at this stage.
+    # Notifications for submission to PENDING_DCS
+    dcs_officers = get_users_by_role_code(db, rbac.DCS_OFFICER_ROLE_CODE)
+    for officer in dcs_officers:
+        create_notification(db, user_id=officer.id, message=f"Request {db_request.id} has been submitted and requires DCS review.", request_id=db_request.id)
+
+    zd_deputy_heads = get_users_by_role_code(db, rbac.ZD_DEPUTY_HEAD_ROLE_CODE)
+    for zd_head in zd_deputy_heads:
+        create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} has been submitted (now PENDING_DCS).", request_id=db_request.id)
+    return db_request
+
+
+def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException # Ensure HTTPException is imported
+    from .. import schemas # Ensure schemas is imported for enums
+    # Ensure db_request relations like request_persons, creator, checkpoint are loaded for notifications
+    db_request = db.query(models.Request).options(
+        selectinload(models.Request.creator),
+        selectinload(models.Request.checkpoint),
+        selectinload(models.Request.request_persons)
+    ).filter(models.Request.id == request_id).first()
+
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found.")
+
+    # Initial RBAC check for general access (get_request might do this, but explicit check here is fine too)
+    # For this specific function, primary RBAC is role-based for the approval action itself.
+    # temp_get_request_check = get_request(db, request_id=request_id, user=approver)
+    # if not temp_get_request_check: #This check is redundant if get_request is called as above and handles it
+    #      raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User cannot access this request for approval action.")
+
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    notify_zd_deputy_on_dcs_approval = False
+    notify_requestor_and_cp_on_zd_approval = False
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        notify_zd_deputy_on_dcs_approval = True
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or          current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        notify_requestor_and_cp_on_zd_approval = True
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for approval. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined.")
+
+    db_request.status = new_status_val
+    db_approval_obj = models.Approval( # Renamed to avoid conflict
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.APPROVED.value, comment=comment
+    )
+    db.add(db_approval_obj)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+
+    # Audit Log
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"APPROVE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+
+    # Notifications
+    if notify_zd_deputy_on_dcs_approval:
+        zd_deputy_heads = get_users_by_role_code(db, role_code=ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(
+                db,
+                user_id=zd_head.id,
+                message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) approved by DCS, requires ZD review.",
+                request_id=db_request.id,
+            )
+
+    if notify_requestor_and_cp_on_zd_approval:
+        # Notify Requestor
+        if db_request.creator_id: # Check if creator_id exists
+            create_notification(
+                db,
+                user_id=db_request.creator_id,
+                message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) has been fully approved.",
+                request_id=db_request.id,
+            )
+        # Notify Checkpoint Operators
+        if db_request.checkpoint_id: # Check if checkpoint_id exists
+            cp_operators = get_users_for_checkpoint(db, checkpoint_id=db_request.checkpoint_id)
+            for operator in cp_operators:
+                create_notification(
+                    db,
+                    user_id=operator.id,
+                    message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for your checkpoint ({db_request.checkpoint.name if db_request.checkpoint else db_request.checkpoint_id}) has been approved.",
+                    request_id=db_request.id,
+                )
+
+    return db_request
+
+
+def decline_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    # Eagerly load required fields for notifications
+    db.refresh(db_request, attribute_names=['creator', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        # Notify ZD Deputy Head
+        zd_deputy_heads = get_users_by_role_code(db, role_code=ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS.", request_id=db_request.id)
+        # Notify Requestor
+        if db_request.creator_id:
+            create_notification(db, user_id=db_request.creator_id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS. Reason: {comment}", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        # Notify Requestor
+        if db_request.creator_id:
+            create_notification(db, user_id=db_request.creator_id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by Zero Department. Reason: {comment}", request_id=db_request.id)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for decline. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined for decline.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.DECLINED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"DECLINE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+    from fastapi import status as fastapi_status
+    db_request = get_request(db, request_id=request_id, user=user)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
+        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
+
+    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
+
+    db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
+
+    # Notifications for submission to PENDING_DCS
+    dcs_officers = get_users_by_role_code(db, DCS_OFFICER_ROLE_CODE)
+    for officer in dcs_officers:
+        create_notification(db, user_id=officer.id, message=f"Request {db_request.id} has been submitted and requires DCS review.", request_id=db_request.id)
+
+    zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+    for zd_head in zd_deputy_heads:
+        create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} has been submitted (now PENDING_DCS).", request_id=db_request.id)
     return db_request
 
 
@@ -526,14 +697,23 @@ def approve_request_step(db: Session, request_id: int, approver: models.User, co
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
         new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
         approval_step = schemas.ApprovalStepEnum.DCS
-        # TODO: Notify ZD Deputy Head that request is ready for ZD approval
+        # Notify ZD Deputy Head
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} approved by DCS, requires ZD review.", request_id=db_request.id)
     elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
-         current_status == schemas.RequestStatusEnum.PENDING_ZD.value: # PENDING_ZD might be set if workflow requires explicit ZD queue
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
         if not rbac.is_zd_deputy_head(approver):
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
         new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
         approval_step = schemas.ApprovalStepEnum.ZD
-        # TODO: Notify requestor and CP operators
+        # Notify requestor
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} has been fully approved.", request_id=db_request.id)
+        # Notify checkpoint operators
+        cp_operators = get_users_for_checkpoint(db, db_request.checkpoint_id)
+        for operator in cp_operators:
+            create_notification(db, user_id=operator.id, message=f"Request {db_request.id} for checkpoint {db_request.checkpoint.name if db_request.checkpoint else ''} has been approved.", request_id=db_request.id)
     else:
         raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for approval. Status: {current_status}")
 
@@ -569,14 +749,21 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
         new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
         approval_step = schemas.ApprovalStepEnum.DCS
-        # TODO: Notify requestor
+        # Notify requestor & ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} was declined by DCS. Reason: {comment}", request_id=db_request.id)
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} was declined by DCS.", request_id=db_request.id)
     elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
          current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
         if not rbac.is_zd_deputy_head(approver):
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
         new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
         approval_step = schemas.ApprovalStepEnum.ZD
-        # TODO: Notify requestor
+        # Notify requestor
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} was declined by Zero Department. Reason: {comment}", request_id=db_request.id)
     else:
         raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for decline. Status: {current_status}")
 
@@ -594,6 +781,663 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
     db.refresh(db_request)
     create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"DECLINE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
     return db_request
+
+
+def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+    from fastapi import status as fastapi_status
+    # Ensure HTTPException is imported if not already at top of file
+    from fastapi import HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=user)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
+        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
+
+    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
+
+    db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
+
+    dcs_officers = get_users_by_role_code(db, DCS_OFFICER_ROLE_CODE)
+    for officer in dcs_officers:
+        create_notification(db, user_id=officer.id, message=f"Request {db_request.id} has been submitted and requires DCS review.", request_id=db_request.id)
+
+    zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+    for zd_head in zd_deputy_heads:
+        create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} has been submitted (now PENDING_DCS).", request_id=db_request.id)
+    return db_request
+
+
+def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status
+    from fastapi import HTTPException # Ensure HTTPException is imported
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+
+    current_status = db_request.status
+    # Ensure request.creator and request.checkpoint are loaded for notifications
+    db.refresh(db_request, attribute_names=['creator', 'checkpoint', 'request_persons'])
+
+
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) approved by DCS, requires ZD review.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) has been fully approved.", request_id=db_request.id)
+        cp_operators = get_users_for_checkpoint(db, db_request.checkpoint_id)
+        for operator in cp_operators:
+            create_notification(db, user_id=operator.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for checkpoint {db_request.checkpoint.name if db_request.checkpoint else ''} has been approved.", request_id=db_request.id)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for approval. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.APPROVED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"APPROVE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def decline_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status
+    from fastapi import HTTPException # Ensure HTTPException is imported
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    db.refresh(db_request, attribute_names=['creator', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS. Reason: {comment}", request_id=db_request.id)
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by Zero Department. Reason: {comment}", request_id=db_request.id)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for decline. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined for decline.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.DECLINED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"DECLINE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=user)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
+        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
+
+    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
+
+    db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
+
+    dcs_officers = get_users_by_role_code(db, DCS_OFFICER_ROLE_CODE)
+    for officer in dcs_officers:
+        create_notification(db, user_id=officer.id, message=f"Request {db_request.id} has been submitted and requires DCS review.", request_id=db_request.id)
+
+    zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+    for zd_head in zd_deputy_heads:
+        create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} has been submitted (now PENDING_DCS).", request_id=db_request.id)
+    return db_request
+
+
+def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    # Eagerly load required fields for notifications if not already loaded by get_request
+    db.refresh(db_request, attribute_names=['creator', 'checkpoint', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) approved by DCS, requires ZD review.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) has been fully approved.", request_id=db_request.id)
+
+        # Ensure checkpoint is loaded before accessing its name
+        if db_request.checkpoint:
+            cp_operators = get_users_for_checkpoint(db, db_request.checkpoint_id)
+            for operator in cp_operators:
+                create_notification(db, user_id=operator.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for checkpoint {db_request.checkpoint.name} has been approved.", request_id=db_request.id)
+        else: # Fallback if checkpoint is somehow not loaded/set
+             cp_operators = get_users_for_checkpoint(db, db_request.checkpoint_id)
+             for operator in cp_operators:
+                create_notification(db, user_id=operator.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for checkpoint ID {db_request.checkpoint_id} has been approved.", request_id=db_request.id)
+
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for approval. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.APPROVED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"APPROVE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def decline_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    db.refresh(db_request, attribute_names=['creator', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS. Reason: {comment}", request_id=db_request.id)
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by Zero Department. Reason: {comment}", request_id=db_request.id)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for decline. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined for decline.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.DECLINED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"DECLINE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=user)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
+        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
+
+    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
+
+    db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
+
+    dcs_officers = get_users_by_role_code(db, DCS_OFFICER_ROLE_CODE)
+    for officer in dcs_officers:
+        create_notification(db, user_id=officer.id, message=f"Request {db_request.id} has been submitted and requires DCS review.", request_id=db_request.id)
+
+    zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+    for zd_head in zd_deputy_heads:
+        create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} has been submitted (now PENDING_DCS).", request_id=db_request.id)
+    return db_request
+
+
+def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    db.refresh(db_request, attribute_names=['creator', 'checkpoint', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) approved by DCS, requires ZD review.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) has been fully approved.", request_id=db_request.id)
+
+        if db_request.checkpoint: # Check if checkpoint is loaded/exists
+            cp_operators = get_users_for_checkpoint(db, db_request.checkpoint_id)
+            for operator in cp_operators:
+                create_notification(db, user_id=operator.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for checkpoint {db_request.checkpoint.name} has been approved.", request_id=db_request.id)
+        else: # Fallback notification if checkpoint info isn't available on the request object
+             cp_operators = get_users_for_checkpoint(db, db_request.checkpoint_id)
+             for operator in cp_operators: # This loop might be redundant if cp_operators is empty due to placeholder
+                create_notification(db, user_id=operator.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for checkpoint ID {db_request.checkpoint_id} has been approved.", request_id=db_request.id)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for approval. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.APPROVED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"APPROVE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def decline_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    db.refresh(db_request, attribute_names=['creator', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS. Reason: {comment}", request_id=db_request.id)
+        zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        if db_request.creator:
+            create_notification(db, user_id=db_request.creator.id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by Zero Department. Reason: {comment}", request_id=db_request.id)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for decline. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined for decline.")
+
+    db_request.status = new_status_val
+    db_approval = models.Approval(
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.DECLINED.value, comment=comment
+    )
+    db.add(db_approval)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"DECLINE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=user)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
+        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
+
+    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
+
+    db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
+
+    dcs_officers = get_users_by_role_code(db, DCS_OFFICER_ROLE_CODE)
+    for officer in dcs_officers:
+        create_notification(db, user_id=officer.id, message=f"Request {db_request.id} has been submitted and requires DCS review.", request_id=db_request.id)
+
+    zd_deputy_heads = get_users_by_role_code(db, ZD_DEPUTY_HEAD_ROLE_CODE)
+    for zd_head in zd_deputy_heads:
+        create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} has been submitted (now PENDING_DCS).", request_id=db_request.id)
+    return db_request
+
+
+def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    db.refresh(db_request, attribute_names=['creator', 'checkpoint', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        # Notify ZD Deputy Head
+        zd_deputy_heads = get_users_by_role_code(db, role_code=rbac.ZD_DEPUTY_HEAD_ROLE_CODE)
+        zd_deputy_heads = get_users_by_role_code(db, role_code=rbac.ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) approved by DCS, requires ZD review.", request_id=db_request.id)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
+        new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        # Notify Requestor
+        if db_request.creator_id: # Check if creator_id exists
+             create_notification(db,user_id=db_request.creator_id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) has been fully approved.",request_id=db_request.id,)
+        # Notify Checkpoint Operators
+        if db_request.checkpoint_id: # Check if checkpoint_id exists
+            cp_operators = get_users_for_checkpoint(db, checkpoint_id=db_request.checkpoint_id)
+            for operator in cp_operators:
+                create_notification(db, user_id=operator.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) for your checkpoint ({db_request.checkpoint.name if db_request.checkpoint else db_request.checkpoint_id}) has been approved.", request_id=db_request.id,)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for approval. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined.")
+
+    db_request.status = new_status_val
+    db_approval_obj = models.Approval( # Renamed to avoid conflict with schema
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.APPROVED.value, comment=comment
+    )
+    db.add(db_approval_obj)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"APPROVE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def decline_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+    from fastapi import status as fastapi_status, HTTPException
+
+    db_request = get_request(db, request_id=request_id, user=approver)
+    if not db_request:
+        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+
+    from .. import rbac
+    new_status_val = ""
+    approval_step: Optional[schemas.ApprovalStepEnum] = None
+    db.refresh(db_request, attribute_names=['creator', 'request_persons'])
+
+
+    current_status = db_request.status
+    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+        if not rbac.is_dcs_officer(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
+        approval_step = schemas.ApprovalStepEnum.DCS
+        # Notify ZD Deputy Head
+        zd_deputy_heads = get_users_by_role_code(db, role_code=ZD_DEPUTY_HEAD_ROLE_CODE)
+        for zd_head in zd_deputy_heads:
+            create_notification(db, user_id=zd_head.id, message=f"Request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS.", request_id=db_request.id,)
+        # Notify Requestor
+        if db_request.creator_id:
+            create_notification(db, user_id=db_request.creator_id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by DCS. Reason: {comment}", request_id=db_request.id,)
+    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+        if not rbac.is_zd_deputy_head(approver):
+            raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
+        new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
+        approval_step = schemas.ApprovalStepEnum.ZD
+        # Notify Requestor
+        if db_request.creator_id:
+            create_notification(db, user_id=db_request.creator_id, message=f"Your request {db_request.id} ({db_request.request_persons[0].full_name if db_request.request_persons else 'N/A'}) was declined by Zero Department. Reason: {comment}", request_id=db_request.id,)
+    else:
+        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail=f"Request not in a state for decline. Status: {current_status}")
+
+    if not approval_step:
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Approval step could not be determined for decline.")
+
+    db_request.status = new_status_val
+    db_approval_obj = models.Approval( # Renamed
+        request_id=request_id, approver_id=approver.id, step=approval_step.value,
+        status=schemas.ApprovalStatusEnum.DECLINED.value, comment=comment
+    )
+    db.add(db_approval_obj)
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id, action=f"DECLINE_{approval_step.value}", data={"new_status": new_status_val, "comment": comment})
+    return db_request
+
+
+def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
+    from .. import rbac
+    from fastapi import status as fastapi_status, HTTPException
+
+    if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
+         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
+
+    query = db.query(models.Request).filter(
+        models.Request.checkpoint_id == checkpoint_id,
+        models.Request.status.in_([schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value])
+    ).options(
+        selectinload(models.Request.creator).selectinload(models.User.role),
+        selectinload(models.Request.request_persons)
+    ).order_by(models.Request.created_at.desc())
+    return query.all()
+
+
+def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
+    from .. import rbac
+    from fastapi import status as fastapi_status, HTTPException
+
+    if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
+         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
+
+    query = db.query(models.Request).filter(
+        models.Request.checkpoint_id == checkpoint_id,
+        models.Request.status.in_([schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value])
+    ).options(
+        selectinload(models.Request.creator).selectinload(models.User.role),
+        selectinload(models.Request.request_persons)
+    ).order_by(models.Request.created_at.desc())
+    return query.all()
+
+
+def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
+    from .. import rbac
+    from fastapi import status as fastapi_status, HTTPException
+
+    if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
+         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
+
+    query = db.query(models.Request).filter(
+        models.Request.checkpoint_id == checkpoint_id,
+        models.Request.status.in_([schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value])
+    ).options(
+        selectinload(models.Request.creator).selectinload(models.User.role),
+        selectinload(models.Request.request_persons)
+    ).order_by(models.Request.created_at.desc())
+    return query.all()
+
+
+def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
+    from .. import rbac
+    from fastapi import status as fastapi_status
+    from fastapi import HTTPException # Ensure HTTPException is imported
+
+    if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
+         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
+
+    # Optional: More specific check if operator is for this specific checkpoint_id
+    # expected_role_code = f"{rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX}{checkpoint_id}"
+    # if user.role.code != expected_role_code:
+    #     raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail=f"User not authorized for checkpoint {checkpoint_id}.")
+
+    query = db.query(models.Request).filter(
+        models.Request.checkpoint_id == checkpoint_id,
+        models.Request.status.in_([schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value])
+    ).options(
+        selectinload(models.Request.creator).selectinload(models.User.role),
+        selectinload(models.Request.request_persons)
+    ).order_by(models.Request.created_at.desc())
+    return query.all()
+
+
+def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
+    from .. import rbac
+    from fastapi import status as fastapi_status
+
+    if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
+         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
+
+    # Optional: More specific check if operator is for this specific checkpoint_id
+    # expected_role_code = f"{rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX}{checkpoint_id}"
+    # if user.role.code != expected_role_code:
+    #     raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail=f"User not authorized for checkpoint {checkpoint_id}.")
+
+    query = db.query(models.Request).filter(
+        models.Request.checkpoint_id == checkpoint_id,
+        models.Request.status.in_([schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value])
+    ).options(
+        selectinload(models.Request.creator).selectinload(models.User.role),
+        selectinload(models.Request.request_persons)
+    ).order_by(models.Request.created_at.desc())
+    return query.all()
 
 
 def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
@@ -791,3 +1635,43 @@ def mark_notification_as_read(db: Session, notification_id: int, user_id: int) -
             db.refresh(db_notification)
         return db_notification
     return None
+
+# --- Helper functions for finding users for notifications ---
+
+def get_users_by_role_code(db: Session, role_code: str) -> List[models.User]:
+    """Fetches all active users who have a specific role code."""
+    return db.query(models.User).join(models.Role).filter(
+        models.Role.code == role_code,
+        models.User.is_active == True
+    ).all()
+
+def get_users_for_checkpoint(db: Session, checkpoint_id: int) -> List[models.User]:
+    """
+    Fetches all active users (checkpoint operators) for a specific checkpoint.
+    This implementation assumes role codes like 'checkpoint_operator_cpX'.
+    Adjust if checkpoint assignments are managed differently.
+    """
+    # This requires a naming convention for checkpoint operator roles, e.g., "checkpoint_operator_cp1" for checkpoint_id 1
+    # Or a more complex lookup if there's a UserCheckpointLink table or similar.
+    # For now, assuming role code contains checkpoint ID.
+    # This is a simplified example; a production system might have a more robust mapping.
+    # Example: Role code "checkpoint_operator_cp1", "checkpoint_operator_cp2", etc.
+    # This is just a placeholder, actual role codes for CPs need to be defined and used.
+    # For demonstration, let's assume a generic "checkpoint_operator" role for now,
+    # and in a real scenario, this would be refined, possibly by checking a User property
+    # or a many-to-many relationship if operators can manage multiple CPs.
+
+    # Placeholder: This will likely need to be more sophisticated.
+    # E.g., if role codes are "checkpoint_operator_1", "checkpoint_operator_2":
+    # target_role_code = f"checkpoint_operator_cp{checkpoint_id}" # Match the pattern from rbac.py
+    # users = get_users_by_role_code(db, target_role_code)
+    # For now, let's return users with a generic CP operator role and they'd get all CP notifications.
+    # This is NOT ideal but a placeholder due to undefined CP-role mapping.
+
+    # A more realistic placeholder if there's a generic CP operator role that sees all CP requests:
+    # users = get_users_by_role_code(db, "checkpoint_operator") # If such a generic role exists
+
+    # For now, returning an empty list as the exact logic for mapping users to CPs is not defined.
+    # This needs to be implemented based on how checkpoint operator roles are actually structured.
+    print(f"WARNING: get_users_for_checkpoint for cp_id {checkpoint_id} is a placeholder and returns no users.")
+    return []

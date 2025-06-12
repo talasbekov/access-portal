@@ -12,7 +12,8 @@ from sql_app.routers import (
     departments,
     requests,
     blacklist,
-    checkpoints
+    checkpoints,
+    notifications # Added notifications router
 )
 from sql_app.dependencies import get_db
 
@@ -41,8 +42,9 @@ app.include_router(users.router)
 app.include_router(role.router)
 app.include_router(departments.router) # Added
 app.include_router(requests.router)
-app.include_router(blacklist.router) # Added
-app.include_router(checkpoints.router) # Added
+app.include_router(blacklist.router)
+app.include_router(checkpoints.router)
+app.include_router(notifications.router) # Added notifications router
 
 # app.include_router(division.router) # Confirmed Removed
 # app.include_router(visitors.router) # Confirmed Removed

@@ -136,7 +136,7 @@ def get_request_visibility_filters_for_user(db: Session, user: models.User) -> d
             filters["checkpoint_id"] = -1 # Impossible ID
     else: # Default for other roles (e.g., EMPLOYEE_ROLE_CODE, UNIT_HEAD_ROLE_CODE)
         filters["creator_id"] = user.id
-        # Could also add specific statuses here, e.g., only own drafts or all own.
-        # For now, only own requests by default if no other rule applies.
+        # Per TS: "Own draft requests only"
+        filters["target_statuses"] = [schemas.RequestStatusEnum.DRAFT.value]
 
     return filters
