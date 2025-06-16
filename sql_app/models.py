@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime, Date
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
@@ -6,6 +6,16 @@ from sqlalchemy.sql import func
 import enum
 
 from .database import Base
+
+
+class GenderEnum(str, Enum):
+    MALE = "MALE"
+    FEMALE = "FEMALE"
+
+
+class RequestDuration(str, Enum):
+    SHORT_TERM = "SHORT_TERM"
+    LONG_TERM  = "LONG_TERM"
 
 
 class DepartmentType(enum.Enum):
@@ -120,9 +130,17 @@ class Request(Base):
     id = Column(Integer, primary_key=True)
     checkpoint_id = Column(Integer, ForeignKey("checkpoints.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    start_date = Column(DateTime(timezone=True), nullable=True) # Added as per detailed instructions
-    end_date = Column(DateTime(timezone=True), nullable=True) # Added as per detailed instructions
+    start_date = Column(Date, nullable=False) # Added as per detailed instructions
+    end_date = Column(Date, nullable=False) # Added as per detailed instructions
     status = Column(String, default='DRAFT')
+    arrival_purpose = Column(String, nullable=False)
+    accompanying = Column(String, nullable=False)
+    contacts_of_accompanying = Column(String, nullable=False)
+    duration = Column(
+        Enum(RequestDuration, name="request_duration_enum"),
+        nullable=False,
+        server_default=RequestDuration.SHORT_TERM.value
+    )
 
     creator_id = Column(Integer, ForeignKey("users.id"))
     creator = relationship("User", back_populates="requests")
@@ -138,11 +156,18 @@ class RequestPerson(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     request_id = Column(Integer, ForeignKey("requests.id"))
-    full_name = Column(String)
-    doc_type = Column(String, nullable=True)
-    doc_number = Column(String, nullable=True)
-    citizenship = Column(String, nullable=True) # Storing as string, not FK to Citizenship
-    company = Column(String, nullable=True)
+    firstname = Column(String)
+    lastname = Column(String)
+    surname = Column(String, nullable=True)
+    birth_date = Column(Date, nullable=False)
+    doc_type = Column(String, nullable=False)
+    doc_number = Column(String, nullable=False)
+    doc_start_date = Column(Date, nullable=False)
+    doc_end_date = Column(Date, nullable=False)
+    gender = Column(Enum(GenderEnum, name="gender_enum"), nullable=False)
+    citizenship = Column(String, nullable=False) # Storing as string, not FK to Citizenship
+    company = Column(String, nullable=False)
+    is_entered = Column(Boolean, nullable=False, default=False)
 
     request = relationship("Request", back_populates="request_persons")
 
@@ -151,10 +176,16 @@ class BlackList(Base):
     __tablename__ = "blacklist"
 
     id = Column(Integer, primary_key=True, index=True)
-    full_name = Column(String, index=True)
-    doc_type = Column(String, nullable=True)
-    doc_number = Column(String, nullable=True, index=True)
-    citizenship = Column(String, nullable=True)
+    firstname = Column(String)
+    lastname = Column(String)
+    surname = Column(String, nullable=True)
+    birth_date = Column(Date, nullable=False)
+    doc_type = Column(String, nullable=False)
+    doc_number = Column(String, nullable=False)
+    doc_start_date = Column(Date, nullable=False)
+    doc_end_date = Column(Date, nullable=False)
+    citizenship = Column(String, nullable=False)  # Storing as string, not FK to Citizenship
+    company = Column(String, nullable=False)
     reason = Column(Text, nullable=True) # Changed from String to Text for potentially longer reasons
 
     added_by = Column(Integer, ForeignKey("users.id"))

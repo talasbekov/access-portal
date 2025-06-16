@@ -11,7 +11,7 @@ DEPARTMENT_HEAD_ROLE_CODE = "department_head" # Assuming a generic code for all 
 DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
 DIVISION_MANAGER_ROLE_CODE = "division_manager" # Assuming a generic code
 DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-CHECKPOINT_OPERATOR_ROLE_PREFIX = "checkpoint_operator_"
+CHECKPOINT_OPERATOR_ROLE_PREFIX = "KPP_"
 EMPLOYEE_ROLE_CODE = "employee"
 
 def is_admin(user: models.User) -> bool:
@@ -124,19 +124,23 @@ def get_request_visibility_filters_for_user(db: Session, user: models.User) -> d
             filters["exact_department_id"] = user.department_id
         else: # Not a manager of a division
             filters["exact_department_id"] = -1 # Impossible ID to ensure no results
+    # Операторы КПП
     elif role_code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        suffix = role_code[len(CHECKPOINT_OPERATOR_ROLE_PREFIX):]
+        print(suffix)
         try:
-            # Example: "checkpoint_operator_3" -> checkpoint_id = 3
-            # This assumes checkpoint IDs are integers and part of the role code.
-            # A more robust system might link users to checkpoints via a separate table.
-            cp_id_str = role_code.replace(CHECKPOINT_OPERATOR_ROLE_PREFIX, "")
-            filters["checkpoint_id"] = int(cp_id_str)
-            filters["target_statuses"] = [schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value]
-        except ValueError: # Role code format incorrect
-            filters["checkpoint_id"] = -1 # Impossible ID
-    else: # Default for other roles (e.g., EMPLOYEE_ROLE_CODE, UNIT_HEAD_ROLE_CODE)
+            cp_id = int(suffix)
+            filters["checkpoint_id"] = cp_id
+            filters["target_statuses"] = [
+                schemas.RequestStatusEnum.APPROVED_ZD.value,
+                schemas.RequestStatusEnum.ISSUED.value,
+            ]
+        except ValueError:
+            # невалидный код роли — никаких заявок
+            filters["checkpoint_id"] = -1
+
+    # остальные роли — свои заявки
+    else:
         filters["creator_id"] = user.id
-        # Could also add specific statuses here, e.g., only own drafts or all own.
-        # For now, only own requests by default if no other rule applies.
 
     return filters

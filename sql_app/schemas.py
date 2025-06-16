@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional, List, Any
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, date
 import enum
 
 # ------------- Enums (mirroring models.py) -------------
@@ -180,17 +180,23 @@ class UserForRecipient(BaseModel): # Simplified User for Notification recipient
 # ------------- RequestPerson Schemas -------------
 
 class RequestPersonBase(BaseModel):
-    full_name: str
-    doc_type: Optional[str] = None
-    doc_number: Optional[str] = None
-    citizenship: Optional[str] = None
-    company: Optional[str] = None
+    firstname: str
+    lastname: str
+    surname: Optional[str]
+    birth_date: date
+    doc_type: str
+    doc_number: str
+    doc_start_date: date
+    doc_end_date: date
+    citizenship: str
+    company: str
+    is_entered: Optional[bool]
 
 class RequestPersonCreate(RequestPersonBase):
     pass # request_id removed as per plan, will be set by path/system
 
 class RequestPersonUpdate(RequestPersonBase):
-    full_name: Optional[str] = None
+    pass
 
 
 class RequestPersonInDBBase(RequestPersonBase):
@@ -208,12 +214,11 @@ class RequestPerson(RequestPersonInDBBase):
 
 class RequestBase(BaseModel):
     checkpoint_id: int
-    # status: str = 'DRAFT' # Will be RequestStatusEnum
-    # Removed: purpose, visit_type, visit_date, req_author, req_sysdata, convoy
-    # req_date is replaced by created_at (handled by DB)
-    start_date: datetime # For determining single/multi-day pass
-    end_date: datetime   # For determining single/multi-day pass
-    # Pass_type can be derived or explicitly set. For now, deriving.
+    start_date: date
+    end_date: date
+    arrival_purpose: str
+    accompanying: str
+    contacts_of_accompanying: str
 
 class RequestCreate(RequestBase):
     # creator_id will typically be set by the current authenticated user
@@ -227,6 +232,9 @@ class RequestUpdate(RequestBase):
     request_persons: Optional[List[RequestPersonUpdate]] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+    arrival_purpose: Optional[str] = None
+    accompanying: Optional[str] = None
+    contacts_of_accompanying: Optional[str] = None
 # Removed duplicated RequestUpdate here
 
 class RequestInDBBase(RequestBase): # Inherits start_date, end_date from RequestBase
@@ -303,18 +311,34 @@ class AuditLog(AuditLogInDBBase):
 # ------------- BlackList Schemas (Modified) -------------
 
 class BlackListBase(BaseModel):
-    full_name: str
-    doc_type: Optional[str] = None
-    doc_number: Optional[str] = None
-    citizenship: Optional[str] = None
-    reason: Optional[str] = None
+    firstname: str
+    lastname: str
+    surname: Optional[str]
+    birth_date: date
+    doc_type: str
+    doc_number: str
+    doc_start_date: date
+    doc_end_date: date
+    citizenship: str
+    company: str
+    reason: str
     status: str = 'ACTIVE'
 
 class BlackListCreate(BlackListBase):
     added_by: int # Usually current user
 
 class BlackListUpdate(BlackListBase):
-    full_name: Optional[str] = None
+    firstname: Optional[str] = None
+    lastname: Optional[str] = None
+    surname: Optional[str] = None
+    birth_date: Optional[date] = None
+    doc_type: Optional[str] = None
+    doc_number: Optional[str] = None
+    doc_start_date: Optional[date] = None
+    doc_end_date: Optional[date] = None
+    citizenship: Optional[str] = None
+    company: Optional[str] = None
+    reason: Optional[str] = None
     status: Optional[str] = None
     # removed_by and removed_at are usually set by specific actions/endpoints
 

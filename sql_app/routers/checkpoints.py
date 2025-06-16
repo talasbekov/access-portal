@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
+from ..rbac import CHECKPOINT_OPERATOR_ROLE_PREFIX
 
 load_dotenv()
 
@@ -56,18 +57,20 @@ async def get_current_active_user_for_cp_router(current_user: models.User = Depe
     return current_user
 
 # Specific role check for Checkpoint Operator
-async def get_checkpoint_operator_user_local(current_user: models.User = Depends(get_current_active_user_for_cp_router)) -> models.User:
-    # Example role code prefix for checkpoint operators
-    # In Step 5, this will be more robust, potentially checking against a specific cp_id from path.
-    if not current_user.role or not current_user.role.code.startswith("checkpoint_operator_"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have Checkpoint Operator privileges")
+async def get_checkpoint_operator_user_local(
+    current_user: models.User = Depends(get_current_active_user_for_cp_router)
+) -> models.User:
+    if not current_user.role or not current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="У пользователя нет привилегий оператора КПП"
+        )
     return current_user
 # --- End Real Authentication Logic ---
 
 
-@router.get("/{cp_id}/requests", response_model=List[schemas.Request])
+@router.get("/cp/requests", response_model=List[schemas.Request])
 async def read_checkpoint_requests(
-    cp_id: int,
     skip: int = 0,
     limit: int = 100,
     status_filter: Optional[schemas.RequestStatusEnum] = None,
@@ -80,6 +83,16 @@ async def read_checkpoint_requests(
     - RBAC for *specific* checkpoint access is partially handled by get_checkpoint_operator_user_local
       and further refined by crud.get_requests_for_checkpoint if needed.
     """
+    prefix = CHECKPOINT_OPERATOR_ROLE_PREFIX  # "KPP_"
+    suffix = current_user.role.code[len(prefix):]
+    try:
+        cp_id = int(suffix)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Невалидный код роли оператора КПП"
+        )
+
     # The get_checkpoint_operator_user_local dependency already performs a basic check
     # that the user has a checkpoint operator role.
     # More specific RBAC (e.g., this user for this specific cp_id) would be handled here

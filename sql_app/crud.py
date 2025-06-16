@@ -229,7 +229,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     # 1. Blacklist Check
     for person_schema in request_in.request_persons:
-        if is_person_blacklisted(db, full_name=person_schema.full_name, doc_number=person_schema.doc_number):
+        if is_person_blacklisted(db, firstname=person_schema.firstname, lastname=person_schema.lastname, doc_number=person_schema.doc_number):
             # Log this attempt - actor_id is creator.id
             create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0,
                              action="CREATE_FAIL_BLACKLISTED",
@@ -248,7 +248,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End date cannot be before start date.")
 
     duration = end_date_obj - start_date_obj
-    is_multi_day = duration >= timedelta(days=2) # More than 0 days duration means multi-day
+    is_multi_day = duration >= timedelta(days=1) # More than 0 days duration means multi-day
 
     creator_role_code = creator.role.code
     creator_department_type = creator.department.type # This is DepartmentType enum instance
@@ -273,8 +273,8 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
             can_create = True
 
     # Admin override - can create any type of pass
-    # if creator_role_code == ADMIN_ROLE_CODE:
-    #    can_create = True
+    if creator_role_code == ADMIN_ROLE_CODE:
+       can_create = True
 
     if not can_create:
         pass_type_str = "multi-day" if is_multi_day else "single-day"
@@ -293,8 +293,10 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         checkpoint_id=request_in.checkpoint_id,
         status=request_in.status.value,
         start_date=request_in.start_date,
-        end_date=request_in.end_date
-        # created_at is server_default
+        end_date=request_in.end_date,
+        arrival_purpose=request_in.arrival_purpose,
+        accompanying=request_in.accompanying,
+        contacts_of_accompanying=request_in.contacts_of_accompanying
     )
     db.add(db_request)
     db.commit() # Commit to get db_request.id for RequestPersons
@@ -504,7 +506,12 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
         raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
 
-    db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    print(len(db_request.request_persons))
+    len_person_data = len(db_request.request_persons)
+    if len_person_data <= 3:
+        db_request.status = schemas.RequestStatusEnum.PENDING_ZD.value
+    else:
+        db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
@@ -724,16 +731,17 @@ def update_blacklist_entry(db: Session, db_entry: models.BlackList, entry_in: sc
         create_audit_log(db, actor_id=actor_id, entity="blacklist", entity_id=db_entry.id, action="UPDATE", data=changed_fields)
     return db_entry
 
-def is_person_blacklisted(db: Session, full_name: str, doc_number: Optional[str] = None, citizenship: Optional[str] = None) -> bool:
+def is_person_blacklisted(db: Session, firstname: str, lastname: str, doc_number: str) -> bool:
     query = db.query(models.BlackList).filter(
-        models.BlacLlist.status == 'ACTIVE',
-        models.BlackList.full_name == full_name # Consider case-insensitive search here
+        models.BlackList.status == 'ACTIVE',
+        models.BlackList.firstname == firstname,
+         # Consider case-insensitive search here
     )
     if doc_number:
         query = query.filter(models.BlackList.doc_number == doc_number)
-    # Not using citizenship in the check for now as per original logic, but can be added.
-    # if citizenship:
-    #     query = query.filter(models.BlackList.citizenship == citizenship)
+    # Not using lastname in the check for now as per original logic, but can be added.
+    if lastname:
+        query = query.filter(models.BlackList.lastname == lastname)
     return query.first() is not None
 
 def remove_blacklist_entry(db: Session, entry_id: int, remover_id: int) -> Optional[models.BlackList]:
