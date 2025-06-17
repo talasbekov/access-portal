@@ -444,6 +444,8 @@ class RequestForVisitLog(BaseModel):
     start_date: date
     end_date: date
     # creator_id: int # Optional: if needed to know who created the request
+    creator_full_name: Optional[str] = None
+    creator_department_name: Optional[str] = None
 
     class Config:
         orm_mode = True

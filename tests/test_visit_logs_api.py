@@ -144,7 +144,89 @@ def test_get_visit_logs_full_history_access(
     mock_crud_get_request.assert_called_once_with(db_session_mock_api, request_id=request_id, user=admin_user)
     mock_rbac_full.assert_called_once_with(admin_user)
     mock_get_logs.assert_called_once_with(db=db_session_mock_api, request_id=request_id, skip=0, limit=100)
+
+    # Detailed content check for the new fields
+    response_data = response.json()
+    assert len(response_data) > 0
+    first_log_response = response_data[0]
+
+    # Assuming the mock_log_list was constructed with models.VisitLog that would lead to this data
+    # This part of the test needs the mock_get_logs to return data that, after serialization,
+    # contains these fields. The current mock_log_list in the test is too simple.
+    # Let's refine this test after defining a proper mock for get_visit_logs_by_request_id.
+    # For now, this structure shows the intent.
+    # assert first_log_response['request']['creator_full_name'] == "Test Creator Name"
+    # assert first_log_response['request']['creator_department_name'] == "Test Department"
+    # assert first_log_response['user']['full_name'] == "Test Visitor Name"
+
     main.app.dependency_overrides.clear()
+
+
+def test_get_visit_logs_response_data_population(client, db_session_mock_api):
+    request_id_val = 1
+    admin_user = mock_user_with_role(user_id=100, role_code=ADMIN_ROLE_CODE)
+    main.app.dependency_overrides[get_current_active_user_for_req_router] = lambda: admin_user
+
+    # 1. Mock for db_request (used in RBAC and to get creator info)
+    mock_creator_department = models.Department(id=30, name="Creator Test Department", type="DEPARTMENT")
+    mock_creator_user = models.User(
+        id=200, full_name="Test Creator Name",
+        department_id=30, department=mock_creator_department,
+        role=models.Role(id=5, code="some_creator_role", name="Creator Role") # Role needed for User model
+    )
+    mock_db_request_for_rbac = models.Request(
+        id=request_id_val, creator_id=200, creator=mock_creator_user,
+        status=schemas.RequestStatusEnum.DRAFT.value, # Add other required fields for Request model
+        start_date=date.today(), end_date=date.today(),
+        arrival_purpose="Test", accompanying="Test", contacts_of_accompanying="Test"
+    )
+
+    # 2. Mock for visitor user (part of VisitLog.user)
+    mock_visitor = models.User(id=300, username="visitor1", full_name="Test Visitor Name", is_active=True, role_id=1) # role_id for User model
+
+    # 3. Mock for the request associated with the visit_log (VisitLog.request)
+    # This can be the same as mock_db_request_for_rbac or a simplified version if appropriate
+    # For this test, we assume it's the same detailed request object.
+    mock_request_in_visit_log = mock_db_request_for_rbac
+
+    # 4. Mock for the VisitLog database object itself
+    mock_db_visit_log_item = models.VisitLog(
+        id=1,
+        request_id=request_id_val,
+        user_id=mock_visitor.id,
+        check_in_time=datetime.utcnow(),
+        check_out_time=None,
+        request=mock_request_in_visit_log, # Nested model
+        user=mock_visitor                 # Nested model
+    )
+
+    with patch('sql_app.crud.get_request', return_value=mock_db_request_for_rbac) as mock_get_req_call, \
+         patch('sql_app.crud.get_visit_logs_by_request_id', return_value=[mock_db_visit_log_item]) as mock_get_visit_logs_call, \
+         patch('sql_app.rbac.can_user_access_visit_log_full_history', return_value=True): # Grant access
+
+        response = client.get(f"/requests/{request_id_val}/visits")
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert len(response_json) == 1
+
+        log_item = response_json[0]
+        assert log_item["id"] == mock_db_visit_log_item.id
+
+        # Verify nested request details
+        assert log_item["request"] is not None
+        assert log_item["request"]["id"] == mock_request_in_visit_log.id
+        assert log_item["request"]["creator_full_name"] == "Test Creator Name"
+        assert log_item["request"]["creator_department_name"] == "Creator Test Department"
+
+        # Verify nested user (visitor) details
+        assert log_item["user"] is not None
+        assert log_item["user"]["id"] == mock_visitor.id
+        assert log_item["user"]["username"] == "visitor1"
+        assert log_item["user"]["full_name"] == "Test Visitor Name"
+
+    main.app.dependency_overrides.clear()
+
 
 # TODO: Add many more tests for GET /requests/{request_id}/visits covering:
 # - Department history access (mock rbac.can_user_access_visit_log_department_history)
