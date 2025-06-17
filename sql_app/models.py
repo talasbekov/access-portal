@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime, Date
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime, Date, Table
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
@@ -8,12 +8,21 @@ import enum
 from .database import Base
 
 
-class GenderEnum(str, Enum):
+# 1. Ассоциационная таблица
+request_checkpoint = Table(
+    "request_checkpoint",
+    Base.metadata,
+    Column("request_id", ForeignKey("requests.id"), primary_key=True),
+    Column("checkpoint_id", ForeignKey("checkpoints.id"), primary_key=True)
+)
+
+
+class GenderEnum(enum.Enum):
     MALE = "MALE"
     FEMALE = "FEMALE"
 
 
-class RequestDuration(str, Enum):
+class RequestDuration(enum.Enum):
     SHORT_TERM = "SHORT_TERM"
     LONG_TERM  = "LONG_TERM"
 
@@ -45,7 +54,11 @@ class Checkpoint(Base):
     code = Column(String, unique=True, index=True)
     name = Column(String)
 
-    requests = relationship("Request", back_populates="checkpoint")
+    requests = relationship(
+        "Request",
+        secondary=request_checkpoint,
+        back_populates="checkpoints"
+    )
 
 
 class ApprovalStep(enum.Enum):
@@ -128,7 +141,6 @@ class Request(Base):
     __tablename__ = "requests"
 
     id = Column(Integer, primary_key=True)
-    checkpoint_id = Column(Integer, ForeignKey("checkpoints.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     start_date = Column(Date, nullable=False) # Added as per detailed instructions
     end_date = Column(Date, nullable=False) # Added as per detailed instructions
@@ -137,18 +149,22 @@ class Request(Base):
     accompanying = Column(String, nullable=False)
     contacts_of_accompanying = Column(String, nullable=False)
     duration = Column(
-        Enum(RequestDuration, name="request_duration_enum"),
+        Enum(RequestDuration),
         nullable=False,
         server_default=RequestDuration.SHORT_TERM.value
     )
 
     creator_id = Column(Integer, ForeignKey("users.id"))
     creator = relationship("User", back_populates="requests")
-    checkpoint = relationship("Checkpoint", back_populates="requests")
 
     request_persons = relationship("RequestPerson", back_populates="request")
     approvals = relationship("Approval", back_populates="request")
     notifications = relationship("Notification", back_populates="request", foreign_keys="[Notification.related_request_id]")
+    checkpoints = relationship(
+        "Checkpoint",
+        secondary=request_checkpoint,
+        back_populates="requests"
+    )
 
 
 class RequestPerson(Base):
@@ -164,7 +180,7 @@ class RequestPerson(Base):
     doc_number = Column(String, nullable=False)
     doc_start_date = Column(Date, nullable=False)
     doc_end_date = Column(Date, nullable=False)
-    gender = Column(Enum(GenderEnum, name="gender_enum"), nullable=False)
+    gender = Column(Enum(GenderEnum), nullable=False)
     citizenship = Column(String, nullable=False) # Storing as string, not FK to Citizenship
     company = Column(String, nullable=False)
     is_entered = Column(Boolean, nullable=False, default=False)

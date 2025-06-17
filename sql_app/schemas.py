@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field
 from datetime import datetime, date
 import enum
 
+from sql_app.models import GenderEnum, RequestDuration
+
+
 # ------------- Enums (mirroring models.py) -------------
 
 class DepartmentTypeEnum(str, enum.Enum):
@@ -188,6 +191,7 @@ class RequestPersonBase(BaseModel):
     doc_number: str
     doc_start_date: date
     doc_end_date: date
+    gender: Optional[GenderEnum]
     citizenship: str
     company: str
     is_entered: Optional[bool]
@@ -213,21 +217,22 @@ class RequestPerson(RequestPersonInDBBase):
 # ------------- Request Schemas (Modified) -------------
 
 class RequestBase(BaseModel):
-    checkpoint_id: int
     start_date: date
     end_date: date
     arrival_purpose: str
     accompanying: str
     contacts_of_accompanying: str
+    duration: Optional[RequestDuration]
 
 class RequestCreate(RequestBase):
     # creator_id will typically be set by the current authenticated user
     # request_persons can be provided on creation
-    request_persons: List[RequestPersonBase] = [] # Changed from RequestPersonCreate
+    checkpoint_ids: List[int]
+    request_persons: List[RequestPersonCreate] # Changed from RequestPersonCreate
     status: RequestStatusEnum = RequestStatusEnum.DRAFT # Set default status here
 
 class RequestUpdate(RequestBase):
-    checkpoint_id: Optional[int] = None
+    checkpoint_ids: List[int] = None
     status: Optional[RequestStatusEnum] = None # Use Enum for updates too
     request_persons: Optional[List[RequestPersonUpdate]] = None
     start_date: Optional[datetime] = None
@@ -243,7 +248,7 @@ class RequestInDBBase(RequestBase): # Inherits start_date, end_date from Request
     created_at: datetime
     status: RequestStatusEnum # Ensure status in DB is also using the enum or compatible string
     creator: Optional[User] = None # Nested User schema
-    checkpoint: Optional[Checkpoint] = None # Nested Checkpoint schema
+    checkpoints:    List[CheckpointInDBBase] = [] # Nested Checkpoint schema
     request_persons: List[RequestPerson] = []
 
     class Config:

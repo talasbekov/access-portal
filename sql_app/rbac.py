@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from . import models, schemas, crud
+from .schemas import RequestStatusEnum
 
 # Role Codes - define them centrally here or import from a constants file/schemas if they exist there
 # For now, define here for clarity within rbac.py
@@ -68,25 +69,49 @@ def can_view_request_based_on_role_and_department(db: Session, user: models.User
     return False
 
 
-# General visibility for a single request (to be used in crud.get_request)
-def can_user_view_request(db: Session, user: models.User, request: models.Request) -> bool:
+def can_user_view_request(
+    db: Session,
+    user: models.User,
+    request: models.Request
+) -> bool:
     if not user or not request:
         return False
+
+    # 1. Админы, ДКС и зам.нач. ЗД видят всё
     if is_admin(user) or is_dcs_officer(user) or is_zd_deputy_head(user):
         return True
+
+    # 2. Создатель видит свой запрос
     if is_creator(user, request):
         return True
-    if request.creator: # Ensure request.creator is loaded
-         # Check department/division hierarchy based on request.creator
-        if can_view_request_based_on_role_and_department(db, user, request.creator):
+
+    # 3. Руководители по департаменту/подразделению
+    if request.creator and can_view_request_based_on_role_and_department(db, user, request.creator):
+        return True
+
+    # 4. Операторы КПП видят «свои» заявки со статусами APPROVED_ZD и ISSUED
+    role = user.role
+    if role and role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        # Из кода роли вычленяем ID КПП
+        # Например, код "CP_OP_5" → префикс "CP_OP_" → цифра "5"
+        cp_id_str = role.code[len(CHECKPOINT_OPERATOR_ROLE_PREFIX):]
+        try:
+            cp_id = int(cp_id_str)
+        except ValueError:
+            return False
+
+        # Проверяем, что в списке request.checkpoints есть нужный КПП
+        has_checkpoint = any(cp.id == cp_id for cp in request.checkpoints)
+
+        # И что статус запроса — либо APPROVED_ZD, либо ISSUED
+        allowed_statuses = {
+            RequestStatusEnum.APPROVED_ZD.value,
+            RequestStatusEnum.ISSUED.value,
+        }
+        if has_checkpoint and request.status in allowed_statuses:
             return True
-    # Add checkpoint operator logic if applicable for viewing specific requests
-    # This might depend on request status as well.
-    # Example:
-    # if user.role and user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX) and \
-    #    request.checkpoint_id and user.role.code == f"{CHECKPOINT_OPERATOR_ROLE_PREFIX}{request.checkpoint_id}" and \
-    #    request.status in [schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value]:
-    #    return True
+
+    # Во всех остальных случаях — отказ
     return False
 
 # Visibility for listing requests (to be used in crud.get_requests query building)

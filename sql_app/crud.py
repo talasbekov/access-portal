@@ -1,9 +1,12 @@
 from sqlalchemy.orm import Session, selectinload
-from typing import List, Optional
+from typing import List, Optional, Any, Union
 from fastapi import HTTPException, status
 from datetime import date
 from fastapi.encoders import jsonable_encoder
-from . import models, schemas, auth
+from sqlalchemy import or_
+
+from . import models, schemas, auth, rbac
+from .models import RequestDuration
 from .routers.requests import ADMIN_ROLE_CODE
 
 
@@ -16,7 +19,7 @@ def get_department_by_name(db: Session, name: str) -> Optional[models.Department
     # Note: Name might not be unique across different parent departments.
     return db.query(models.Department).filter(models.Department.name == name).first()
 
-def get_departments(db: Session, skip: int = 0, limit: int = 100) -> List[models.Department]:
+def get_departments(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.Department]]:
     return db.query(models.Department).offset(skip).limit(limit).all()
 
 def create_department(db: Session, department: schemas.DepartmentCreate) -> models.Department:
@@ -46,7 +49,7 @@ def delete_department(db: Session, db_department: models.Department) -> models.D
     # For consistency with other delete functions here, returning the object.
     return db_department
 
-def get_department_users(db: Session, department_id: int, skip: int = 0, limit: int = 100) -> List[models.User]:
+def get_department_users(db: Session, department_id: int, skip: int = 0, limit: int = 100) -> list[type[models.User]]:
     return db.query(models.User).filter(models.User.department_id == department_id).options(
         selectinload(models.User.role) # Eager load role
     ).offset(skip).limit(limit).all()
@@ -59,7 +62,7 @@ def get_checkpoint(db: Session, checkpoint_id: int) -> Optional[models.Checkpoin
 def get_checkpoint_by_code(db: Session, code: str) -> Optional[models.Checkpoint]:
     return db.query(models.Checkpoint).filter(models.Checkpoint.code == code).first()
 
-def get_checkpoints(db: Session, skip: int = 0, limit: int = 100) -> List[models.Checkpoint]:
+def get_checkpoints(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.Checkpoint]]:
     return db.query(models.Checkpoint).offset(skip).limit(limit).all()
 
 def create_checkpoint(db: Session, checkpoint: schemas.CheckpointCreate) -> models.Checkpoint:
@@ -88,7 +91,7 @@ def delete_checkpoint(db: Session, db_checkpoint: models.Checkpoint) -> models.C
 def get_role(db: Session, role_id: int) -> Optional[models.Role]:
     return db.query(models.Role).filter(models.Role.id == role_id).first()
 
-def get_roles(db: Session, skip: int = 0, limit: int = 100) -> List[models.Role]:
+def get_roles(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.Role]]:
     return db.query(models.Role).offset(skip).limit(limit).all()
 
 def get_role_by_name(db: Session, role_name: str) -> Optional[models.Role]:
@@ -148,7 +151,7 @@ def get_user_by_email(db: Session, email: str) -> Optional[models.User]:
         selectinload(models.User.department)
     ).filter(models.User.email == email).first()
 
-def get_users(db: Session, skip: int = 0, limit: int = 100) -> List[models.User]:
+def get_users(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.User]]:
     return db.query(models.User).options(
         selectinload(models.User.role),
         selectinload(models.User.department)
@@ -225,8 +228,6 @@ ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head"
 
 
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
-    from datetime import timedelta, date, datetime # Ensure imports
-
     # 1. Blacklist Check
     for person_schema in request_in.request_persons:
         if is_person_blacklisted(db, firstname=person_schema.firstname, lastname=person_schema.lastname, doc_number=person_schema.doc_number):
@@ -241,20 +242,12 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     if not creator.role or not creator.department:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role or department not defined.")
 
-    start_date_obj = request_in.start_date.date() if isinstance(request_in.start_date, datetime) else request_in.start_date
-    end_date_obj = request_in.end_date.date() if isinstance(request_in.end_date, datetime) else request_in.end_date
-
-    if start_date_obj > end_date_obj:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="End date cannot be before start date.")
-
-    duration = end_date_obj - start_date_obj
-    is_multi_day = duration >= timedelta(days=1) # More than 0 days duration means multi-day
-
     creator_role_code = creator.role.code
     creator_department_type = creator.department.type # This is DepartmentType enum instance
+    print(request_in.duration)
 
     can_create = False
-    if is_multi_day: # Multi-day pass
+    if request_in.duration == RequestDuration.LONG_TERM: # Multi-day pass
         # Creator must be Department Head or Deputy for any department type that is not a Division.
         # Or Division Manager/Deputy if their department IS a Division (implicitly a higher level).
         if creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE]:
@@ -262,7 +255,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         # Implicitly, if a Div Manager creates a multi-day pass for their division, it's allowed.
         # This rule might need refinement: e.g. Dept Heads of depts within a Division.
         # Current TS: Multi-day: Creator must be Department Head or Deputy.
-    else: # Single-day pass
+    elif request_in.duration == RequestDuration.SHORT_TERM: # Single-day pass
         # Creator must be Division Manager or Deputy. Department type must be DIVISION.
         # Or Department Head/Deputy for departments that are NOT divisions (implicitly lower level).
         if creator_role_code in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE] and \
@@ -271,16 +264,17 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         elif creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE] and \
              creator_department_type != models.DepartmentType.UNIT: # Dept head of a non-division unit
             can_create = True
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Неправильно указан duration {request_in.duration}. Определите вариант краткосрочная заявка или долгосрочная.")
 
     # Admin override - can create any type of pass
     if creator_role_code == ADMIN_ROLE_CODE:
        can_create = True
 
     if not can_create:
-        pass_type_str = "multi-day" if is_multi_day else "single-day"
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail=f"User role '{creator.role.name}' and department type '{creator_department_type.value}' "
-                                   f"not authorized to create {pass_type_str} passes.")
+                            detail=f"User role '{creator.role.name}' and department type '{creator_department_type.value}'. У вас нет допуска.")
 
     # 3. Create Request and RequestPerson objects
     # Initial status is DRAFT (from schema default) or PENDING_DCS if submitted directly.
@@ -288,16 +282,28 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     # The router endpoint should handle if it's a direct submit changing status.
     # For now, using status from request_in, which defaults to DRAFT.
 
+    # 1. Собираем объекты-модели Checkpoint по списку id
+    if not request_in.checkpoint_ids:
+        raise HTTPException(400, "Нужно хотя бы 1 checkpoint_id")
+    checkpoints = (
+        db.query(models.Checkpoint)
+        .filter(models.Checkpoint.id.in_(request_in.checkpoint_ids))
+        .all()
+    )
+    if len(checkpoints) != len(request_in.checkpoint_ids):
+        raise HTTPException(404, "Некоторые checkpoints не найдены")
+
     db_request = models.Request(
         creator_id=creator.id,
-        checkpoint_id=request_in.checkpoint_id,
         status=request_in.status.value,
         start_date=request_in.start_date,
         end_date=request_in.end_date,
         arrival_purpose=request_in.arrival_purpose,
         accompanying=request_in.accompanying,
-        contacts_of_accompanying=request_in.contacts_of_accompanying
+        contacts_of_accompanying=request_in.contacts_of_accompanying,
+        duration=request_in.duration.value,  # если duration тоже enum-поле
     )
+    db_request.checkpoints = checkpoints # <— вот тут связываем many-to-many
     db.add(db_request)
     db.commit() # Commit to get db_request.id for RequestPersons
 
@@ -305,7 +311,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         person_model = models.RequestPerson(**person_schema.model_dump(), request_id=db_request.id)
         db.add(person_model)
     db.commit() # Commit all new persons
-
+    db.flush()
     db.refresh(db_request) # Refresh to get all relationships, including request_persons
 
     # 4. Audit Log
@@ -323,24 +329,37 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     return db_request
 
-def get_request(db: Session, request_id: int, user: models.User) -> Optional[models.Request]: # Added user for RBAC
-    # RBAC checks are now integrated via rbac.can_user_view_request
-    request_obj = db.query(models.Request).options(
-        selectinload(models.Request.creator).options(
-            selectinload(models.User.role),
-            selectinload(models.User.department)
-        ),
-        selectinload(models.Request.checkpoint),
-        selectinload(models.Request.request_persons),
-        selectinload(models.Request.approvals).selectinload(models.Approval.approver)
-    ).filter(models.Request.id == request_id).first()
+def get_request(
+    db: Session,
+    request_id: int,
+    user: models.User  # Добавили пользователя для RBAC
+) -> Optional[models.Request]:
+    # Сразу подгружаем все нужные связи
+    request_obj = (
+        db.query(models.Request)
+          .options(
+              selectinload(models.Request.creator)
+                .options(
+                    selectinload(models.User.role),
+                    selectinload(models.User.department),
+                ),
+              selectinload(models.Request.checkpoints),        # many-to-many
+              selectinload(models.Request.request_persons),
+              selectinload(models.Request.approvals)
+                .selectinload(models.Approval.approver)
+          )
+          .filter(models.Request.id == request_id)
+          .first()
+    )
 
-    # RBAC check after fetching
-    from . import rbac # Import rbac module
-    if request_obj and not rbac.can_user_view_request(db, user, request_obj): # request_obj can be None
-        # If object exists but user cannot view
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this request")
-    # If request_obj is None initially, router should handle 404. If it exists but fails RBAC, 403.
+    # RBAC: проверяем право просмотра
+    if request_obj and not rbac.can_user_view_request(db, user, request_obj):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view this request"
+        )
+
+    # Если request_obj is None, он уходит дальше как None (404 обрабатывается в роутере)
     return request_obj
 
 
@@ -384,72 +403,85 @@ def get_requests(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = None,
-    checkpoint_id: Optional[int] = None,
+    checkpoints: Optional[List[int]] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     visitor_name: Optional[str] = None,
-    # created_by_you: bool = False, # Example of a boolean filter
-    # assigned_to_you_for_approval: bool = False # Example
-) -> List[models.Request]:
-    from . import rbac # Import rbac module for visibility rules
-    from sqlalchemy import or_ # For OR conditions if needed based on RBAC
-    from datetime import date # Ensure date is imported
-
+) -> Union[list[Any], list[type[models.Request]]]:
+    # Базовый запрос с нужными eager-load
     query = db.query(models.Request).options(
         selectinload(models.Request.creator).selectinload(models.User.role),
         selectinload(models.Request.creator).selectinload(models.User.department),
-        selectinload(models.Request.checkpoint),
-        selectinload(models.Request.request_persons)
+        selectinload(models.Request.checkpoints),
+        selectinload(models.Request.request_persons),
     )
 
-    # Apply RBAC visibility filters first
+    # RBAC: получаем набор фильтров видимости
     visibility_filters = rbac.get_request_visibility_filters_for_user(db, user)
 
     if not visibility_filters.get("is_unrestricted", False):
-        # Apply restrictive filters if user is not admin/DCS/ZD
         conditions = []
+
         if "creator_id" in visibility_filters:
             conditions.append(models.Request.creator_id == visibility_filters["creator_id"])
 
         if "department_ids" in visibility_filters:
-            # User is Dept Head, sees their department and sub-departments
-            conditions.append(models.Request.creator.has(models.User.department_id.in_(visibility_filters["department_ids"])))
+            conditions.append(
+                models.Request.creator.has(
+                    models.User.department_id.in_(visibility_filters["department_ids"])
+                )
+            )
 
         if "exact_department_id" in visibility_filters:
-            # User is Division Manager, sees only their division
-            conditions.append(models.Request.creator.has(models.User.department_id == visibility_filters["exact_department_id"]))
+            conditions.append(
+                models.Request.creator.has(
+                    models.User.department_id == visibility_filters["exact_department_id"]
+                )
+            )
 
-        if "checkpoint_id" in visibility_filters: # Specific checkpoint ID for CP operator
-            conditions.append(models.Request.checkpoint_id == visibility_filters["checkpoint_id"])
-            if "target_statuses" in visibility_filters: # CP Ops usually see specific statuses
-                 conditions.append(models.Request.status.in_(visibility_filters["target_statuses"]))
+        if "checkpoint_ids" in visibility_filters:
+            # many-to-many: any() на relationship
+            conditions.append(
+                models.Request.checkpoints.any(
+                    models.Checkpoint.id == visibility_filters["checkpoint_ids"]
+                )
+            )
+            if "target_statuses" in visibility_filters:
+                conditions.append(models.Request.status.in_(visibility_filters["target_statuses"]))
 
-        if conditions:
-            query = query.filter(or_(*conditions)) # Apply OR if multiple restrictive conditions apply to a user type (e.g. see own OR see dept)
-                                                 # If they are AND, then query.filter(and_(*conditions)) or just multiple .filter() calls.
-                                                 # The current rbac.get_request_visibility_filters_for_user implies these are alternatives based on role.
-                                                 # So, if a user is e.g. a Dept Head, they see based on department_ids. If also an Employee, this logic might need care.
-                                                 # For now, assuming one primary visibility rule applies per user based on their main role.
-                                                 # If creator_id is set, it's usually exclusive unless they are also a manager type.
-                                                 # The current rbac.get_request_visibility_filters_for_user returns only one type of filter usually.
-        else: # No specific visibility rules applied, but not unrestricted = can see nothing.
-            return []
+        if not conditions:
+            return []  # неразрешено ничего видеть
+        query = query.filter(or_(*conditions))
 
-
-    # Apply explicit query parameter filters (these are ANDed with visibility)
+    # Явные фильтры из параметров запроса (AND к видимости)
     if status:
         query = query.filter(models.Request.status == status)
-    if checkpoint_id is not None:
-        query = query.filter(models.Request.checkpoint_id == checkpoint_id)
-    if date_from: # Ensure date_from is datetime.date object
+
+    if checkpoints:
+        # хотя бы один из переданных checkpoint_id должен быть у Request
+        query = query.filter(
+            models.Request.checkpoints.any(models.Checkpoint.id.in_(checkpoints))
+        )
+
+    if date_from:
         query = query.filter(models.Request.start_date >= date_from)
-    if date_to: # Ensure date_to is datetime.date object
+
+    if date_to:
         query = query.filter(models.Request.end_date <= date_to)
+
     if visitor_name:
-        query = query.join(models.RequestPerson).filter(models.RequestPerson.full_name.ilike(f"%{visitor_name}%"))
+        query = (
+            query.join(models.RequestPerson)
+                 .filter(models.RequestPerson.firstname.ilike(f"%{visitor_name}%"))
+        )
 
-
-    return query.order_by(models.Request.created_at.desc()).offset(skip).limit(limit).all()
+    return (
+        query
+        .order_by(models.Request.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def update_request_draft(db: Session, request_id: int, request_update: schemas.RequestUpdate, user: models.User) -> models.Request:
@@ -611,7 +643,7 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
     return db_request
 
 
-def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> List[models.Request]:
+def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> list[type[models.Request]]:
     from . import rbac
     from fastapi import status as fastapi_status
 
@@ -623,13 +655,26 @@ def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.Us
     # if user.role.code != expected_role_code:
     #     raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail=f"User not authorized for checkpoint {checkpoint_id}.")
 
-    query = db.query(models.Request).filter(
-        models.Request.checkpoint_id == checkpoint_id,
-        models.Request.status.in_([schemas.RequestStatusEnum.APPROVED_ZD.value, schemas.RequestStatusEnum.ISSUED.value])
-    ).options(
-        selectinload(models.Request.creator).selectinload(models.User.role), # Limit loaded data if not needed
-        selectinload(models.Request.request_persons)
-    ).order_by(models.Request.created_at.desc())
+    query = (
+        db.query(models.Request)
+        .filter(
+            models.Request.checkpoints.any(
+                models.Checkpoint.id == checkpoint_id
+            ),
+            models.Request.status.in_([
+                schemas.RequestStatusEnum.APPROVED_ZD.value,
+                schemas.RequestStatusEnum.ISSUED.value
+            ])
+        )
+        .options(
+            selectinload(models.Request.creator)
+            .selectinload(models.User.role),
+            selectinload(models.Request.request_persons),
+            selectinload(models.Request.checkpoints)  # если нужно подгрузить инфо о КПП
+        )
+        .order_by(models.Request.created_at.desc())
+    )
+
     return query.all()
 
 def delete_request(db: Session, db_request: models.Request) -> models.Request:
@@ -655,7 +700,7 @@ def get_approval(db: Session, approval_id: int) -> Optional[models.Approval]:
         selectinload(models.Approval.request) # Careful with depth here
     ).filter(models.Approval.id == approval_id).first()
 
-def get_approvals_for_request(db: Session, request_id: int, skip: int = 0, limit: int = 100) -> List[models.Approval]:
+def get_approvals_for_request(db: Session, request_id: int, skip: int = 0, limit: int = 100) -> list[type[models.Approval]]:
     return db.query(models.Approval).options(selectinload(models.Approval.approver)).filter(models.Approval.request_id == request_id).order_by(models.Approval.timestamp.desc()).offset(skip).limit(limit).all()
 
 def update_approval(db: Session, db_approval: models.Approval, approval_in: schemas.ApprovalUpdate) -> models.Approval:
@@ -684,7 +729,7 @@ def create_audit_log(db: Session, actor_id: Optional[int], entity: str, entity_i
     db.refresh(db_audit_log)
     return db_audit_log
 
-def get_audit_logs(db: Session, skip: int = 0, limit: int = 100) -> List[models.AuditLog]:
+def get_audit_logs(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.AuditLog]]:
     return db.query(models.AuditLog).options(selectinload(models.AuditLog.actor)).order_by(models.AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
 
 # ------------- Blacklist CRUD (Refactored) -------------
@@ -698,7 +743,7 @@ def create_blacklist_entry(db: Session, entry_in: schemas.BlackListCreate, adder
     db.add(db_entry)
     db.commit()
     db.refresh(db_entry)
-    create_audit_log(db, actor_id=adder_id, entity="blacklist", entity_id=db_entry.id, action="CREATE", data={"full_name": db_entry.full_name})
+    create_audit_log(db, actor_id=adder_id, entity="blacklist", entity_id=db_entry.id, action="CREATE", data={"full_name": db_entry.firstname})
     return db_entry
 
 def get_blacklist_entry(db: Session, entry_id: int) -> Optional[models.BlackList]:
@@ -707,7 +752,8 @@ def get_blacklist_entry(db: Session, entry_id: int) -> Optional[models.BlackList
         selectinload(models.BlackList.removed_by_user)
     ).filter(models.BlackList.id == entry_id).first()
 
-def get_blacklist_entries(db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> List[models.BlackList]:
+def get_blacklist_entries(db: Session, skip: int = 0, limit: int = 100, active_only: bool = False) -> list[
+    type[models.BlackList]]:
     query = db.query(models.BlackList).options(
         selectinload(models.BlackList.added_by_user),
         selectinload(models.BlackList.removed_by_user)
@@ -760,14 +806,14 @@ def remove_blacklist_entry(db: Session, entry_id: int, remover_id: int) -> Optio
     db.add(db_entry)
     db.commit()
     db.refresh(db_entry)
-    create_audit_log(db, actor_id=remover_id, entity="blacklist", entity_id=db_entry.id, action="REMOVE", data={"full_name": db_entry.full_name, "status": "INACTIVE"})
+    create_audit_log(db, actor_id=remover_id, entity="blacklist", entity_id=db_entry.id, action="REMOVE", data={"full_name": db_entry.firstname, "status": "INACTIVE"})
     return db_entry
 
 def delete_blacklist_entry(db: Session, db_entry: models.BlackList, actor_id: Optional[int]) -> models.BlackList: # This is a hard delete
     # It's often better to soft delete (deactivate) sensitive data like blacklist entries.
     # If hard delete is truly required:
     entry_id = db_entry.id
-    full_name = db_entry.full_name
+    # full_name = db_entry.full_name
     db.delete(db_entry)
     db.commit()
     # Audit this action - actor_id might be tricky if current_user not passed. Consider adding.
@@ -789,13 +835,14 @@ def create_notification(db: Session, user_id: int, message: str, request_id: Opt
     db.refresh(db_notification)
     return db_notification
 
-def get_user_notifications(db: Session, user_id: int, read: Optional[bool] = None, skip: int = 0, limit: int = 20) -> List[models.Notification]:
+def get_user_notifications(db: Session, user_id: int, read: Optional[bool] = None, skip: int = 0, limit: int = 20) -> \
+list[type[models.Notification]]:
     query = db.query(models.Notification).filter(models.Notification.user_id == user_id)
     if read is not None:
         query = query.filter(models.Notification.is_read == read)
     return query.order_by(models.Notification.timestamp.desc()).offset(skip).limit(limit).all()
 
-def mark_notification_as_read(db: Session, notification_id: int, user_id: int) -> Optional[models.Notification]:
+def mark_notification_as_read(db: Session, notification_id: int, user_id: int) -> Optional[type[models.Notification]]:
     db_notification = db.query(models.Notification).filter(
         models.Notification.id == notification_id,
         models.Notification.user_id == user_id # Ensure user can only mark their own
