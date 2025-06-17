@@ -855,3 +855,53 @@ def mark_notification_as_read(db: Session, notification_id: int, user_id: int) -
             db.refresh(db_notification)
         return db_notification
     return None
+
+
+# ------------- VisitLog CRUD -------------
+
+def create_visit_log(db: Session, visit_log: schemas.VisitLogCreate) -> models.VisitLog:
+    """
+    Creates a new visit log entry.
+    check_in_time is set automatically by the database (server_default=func.now()).
+    """
+    db_visit_log = models.VisitLog(
+        request_id=visit_log.request_id,
+        user_id=visit_log.user_id,
+        check_out_time=visit_log.check_out_time  # This might be None if not provided
+    )
+    db.add(db_visit_log)
+    db.commit()
+    db.refresh(db_visit_log)
+    return db_visit_log
+
+def get_visit_log(db: Session, visit_log_id: int) -> Optional[models.VisitLog]:
+    """
+    Retrieves a specific visit log entry by its ID.
+    """
+    return db.query(models.VisitLog).options(
+        selectinload(models.VisitLog.user), # Eager load related user (visitor)
+        selectinload(models.VisitLog.request) # Eager load related request
+    ).filter(models.VisitLog.id == visit_log_id).first()
+
+def get_visit_logs_by_request_id(db: Session, request_id: int, skip: int = 0, limit: int = 100) -> List[models.VisitLog]:
+    """
+    Retrieves all visit log entries for a given request ID.
+    """
+    return db.query(models.VisitLog).options(
+        selectinload(models.VisitLog.user),
+        selectinload(models.VisitLog.request)
+    ).filter(models.VisitLog.request_id == request_id).order_by(models.VisitLog.check_in_time.desc()).offset(skip).limit(limit).all()
+
+def update_visit_log(db: Session, visit_log_id: int, visit_log_update: schemas.VisitLogUpdate) -> Optional[models.VisitLog]:
+    """
+    Updates a visit log entry, primarily for setting check_out_time.
+    """
+    db_visit_log = db.query(models.VisitLog).filter(models.VisitLog.id == visit_log_id).first()
+    if db_visit_log:
+        # Only update check_out_time if it's provided in the update schema
+        if visit_log_update.check_out_time is not None:
+            db_visit_log.check_out_time = visit_log_update.check_out_time
+            db.add(db_visit_log)
+            db.commit()
+            db.refresh(db_visit_log)
+    return db_visit_log

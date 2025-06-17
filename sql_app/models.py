@@ -135,6 +135,7 @@ class User(Base):
 
 
     requests = relationship("Request", back_populates="creator") # Renamed from user
+    visit_logs = relationship("VisitLog", back_populates="user")
 
 
 class Request(Base):
@@ -165,6 +166,7 @@ class Request(Base):
         secondary=request_checkpoint,
         back_populates="requests"
     )
+    visit_logs = relationship("VisitLog", back_populates="request")
 
 
 class RequestPerson(Base):
@@ -186,6 +188,19 @@ class RequestPerson(Base):
     is_entered = Column(Boolean, nullable=False, default=False)
 
     request = relationship("Request", back_populates="request_persons")
+
+
+class VisitLog(Base):
+    __tablename__ = "visit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(Integer, ForeignKey("requests.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False) # Represents the visitor
+    check_in_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    check_out_time = Column(DateTime(timezone=True), nullable=True)
+
+    request = relationship("Request", back_populates="visit_logs")
+    user = relationship("User", back_populates="visit_logs")
 
 
 class BlackList(Base):
