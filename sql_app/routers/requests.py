@@ -398,6 +398,45 @@ async def read_visit_logs_for_request(
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view visit logs for this request.")
 
-    # Step 4: If allowed, fetch and return visit logs
-    visit_logs = crud.get_visit_logs_by_request_id(db=db, request_id=request_id, skip=skip, limit=limit)
-    return visit_logs
+    # Step 4: If allowed, fetch and prepare visit logs for response
+    db_visit_logs = crud.get_visit_logs_by_request_id(db=db, request_id=request_id, skip=skip, limit=limit)
+
+    response_visit_logs: List[schemas.VisitLog] = []
+    for db_log in db_visit_logs:
+        request_data = {}
+        if db_log.request: # Ensure request object exists
+            request_data = {
+                "id": db_log.request.id,
+                "status": db_log.request.status,
+                "start_date": db_log.request.start_date,
+                "end_date": db_log.request.end_date,
+                # created_at is not in RequestForVisitLog, if needed, add to schema
+            }
+            if db_log.request.creator:
+                request_data["creator_full_name"] = db_log.request.creator.full_name
+                if db_log.request.creator.department:
+                    request_data["creator_department_name"] = db_log.request.creator.department.name
+
+        request_for_visit_log = schemas.RequestForVisitLog(**request_data) if request_data else None
+
+        user_data = {}
+        if db_log.user: # Ensure user (visitor) object exists
+            user_data = {
+                "id": db_log.user.id,
+                "username": db_log.user.username,
+                "full_name": db_log.user.full_name,
+            }
+        user_for_visit_log = schemas.UserForVisitLog(**user_data) if user_data else None
+
+        visit_log_response = schemas.VisitLog(
+            id=db_log.id,
+            request_id=db_log.request_id,
+            user_id=db_log.user_id, # visitor's id
+            check_in_time=db_log.check_in_time,
+            check_out_time=db_log.check_out_time,
+            request=request_for_visit_log,
+            user=user_for_visit_log
+        )
+        response_visit_logs.append(visit_log_response)
+
+    return response_visit_logs

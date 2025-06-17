@@ -880,7 +880,7 @@ def get_visit_log(db: Session, visit_log_id: int) -> Optional[models.VisitLog]:
     """
     return db.query(models.VisitLog).options(
         selectinload(models.VisitLog.user), # Eager load related user (visitor)
-        selectinload(models.VisitLog.request) # Eager load related request
+        selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.department)
     ).filter(models.VisitLog.id == visit_log_id).first()
 
 def get_visit_logs_by_request_id(db: Session, request_id: int, skip: int = 0, limit: int = 100) -> List[models.VisitLog]:
@@ -888,8 +888,8 @@ def get_visit_logs_by_request_id(db: Session, request_id: int, skip: int = 0, li
     Retrieves all visit log entries for a given request ID.
     """
     return db.query(models.VisitLog).options(
-        selectinload(models.VisitLog.user),
-        selectinload(models.VisitLog.request)
+        selectinload(models.VisitLog.user), # Eager load related user (visitor)
+        selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.department)
     ).filter(models.VisitLog.request_id == request_id).order_by(models.VisitLog.check_in_time.desc()).offset(skip).limit(limit).all()
 
 def update_visit_log(db: Session, visit_log_id: int, visit_log_update: schemas.VisitLogUpdate) -> Optional[models.VisitLog]:
