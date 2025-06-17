@@ -8,12 +8,12 @@ from sql_app.models import GenderEnum, RequestDuration
 
 
 # ------------- Enums (mirroring models.py) -------------
-
 class DepartmentTypeEnum(str, enum.Enum):
     COMPANY = "COMPANY"
     DEPARTMENT = "DEPARTMENT"
     DIVISION = "DIVISION"
     UNIT = "UNIT"
+
 
 class ApprovalStepEnum(str, enum.Enum):
     DCS = "DCS"
@@ -23,6 +23,7 @@ class ApprovalStatusEnum(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     DECLINED = "DECLINED"
+
 
 class RequestStatusEnum(str, enum.Enum):
     DRAFT = "DRAFT"
@@ -35,8 +36,8 @@ class RequestStatusEnum(str, enum.Enum):
     ISSUED = "ISSUED" # Pass issued
     CLOSED = "CLOSED" # Request completed or expired
 
-# ------------- Department Schemas -------------
 
+# ------------- Department Schemas -------------
 class DepartmentBase(BaseModel):
     name: str
     type: DepartmentTypeEnum

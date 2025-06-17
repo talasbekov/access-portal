@@ -262,7 +262,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
            creator_department_type == models.DepartmentType.DIVISION:
             can_create = True
         elif creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE] and \
-             creator_department_type != models.DepartmentType.UNIT: # Dept head of a non-division unit
+             creator_department_type != models.DepartmentType.DIVISION: # Dept head of a non-division unit
             can_create = True
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -408,7 +408,6 @@ def get_requests(
     date_to: Optional[date] = None,
     visitor_name: Optional[str] = None,
 ) -> Union[list[Any], list[type[models.Request]]]:
-    # Базовый запрос с нужными eager-load
     query = db.query(models.Request).options(
         selectinload(models.Request.creator).selectinload(models.User.role),
         selectinload(models.Request.creator).selectinload(models.User.department),
@@ -416,49 +415,53 @@ def get_requests(
         selectinload(models.Request.request_persons),
     )
 
-    # RBAC: получаем набор фильтров видимости
-    visibility_filters = rbac.get_request_visibility_filters_for_user(db, user)
+    # 1) Вычисляем базовые фильтры видимости
+    vf = rbac.get_request_visibility_filters_for_user(db, user)
 
-    if not visibility_filters.get("is_unrestricted", False):
-        conditions = []
+    if not vf.get("is_unrestricted", False):
+        conds = []
 
-        if "creator_id" in visibility_filters:
-            conditions.append(models.Request.creator_id == visibility_filters["creator_id"])
+        # собственные заявки
+        if vf.get("creator_id") is not None:
+            conds.append(models.Request.creator_id == vf["creator_id"])
 
-        if "department_ids" in visibility_filters:
-            conditions.append(
+        # по списку департаментов
+        if vf.get("department_ids"):
+            conds.append(
                 models.Request.creator.has(
-                    models.User.department_id.in_(visibility_filters["department_ids"])
+                    models.User.department_id.in_(vf["department_ids"])
                 )
             )
 
-        if "exact_department_id" in visibility_filters:
-            conditions.append(
+        # точный департамент (division manager)
+        if vf.get("exact_department_id") is not None:
+            conds.append(
                 models.Request.creator.has(
-                    models.User.department_id == visibility_filters["exact_department_id"]
+                    models.User.department_id == vf["exact_department_id"]
                 )
             )
 
-        if "checkpoint_ids" in visibility_filters:
-            # many-to-many: any() на relationship
-            conditions.append(
+        # оператор КПП
+        if vf.get("checkpoint_id") is not None:
+            conds.append(
                 models.Request.checkpoints.any(
-                    models.Checkpoint.id == visibility_filters["checkpoint_ids"]
+                    models.Checkpoint.id == vf["checkpoint_id"]
                 )
             )
-            if "target_statuses" in visibility_filters:
-                conditions.append(models.Request.status.in_(visibility_filters["target_statuses"]))
+            # и только нужные статусы для оператора
+            if vf.get("target_statuses"):
+                conds.append(models.Request.status.in_(vf["target_statuses"]))
 
-        if not conditions:
-            return []  # неразрешено ничего видеть
-        query = query.filter(or_(*conditions))
+        if not conds:
+            return []  # пользователю запрещено видеть любые заявки
 
-    # Явные фильтры из параметров запроса (AND к видимости)
+        query = query.filter(or_(*conds))
+
+    # 2) Явные фильтры из запроса
     if status:
         query = query.filter(models.Request.status == status)
 
     if checkpoints:
-        # хотя бы один из переданных checkpoint_id должен быть у Request
         query = query.filter(
             models.Request.checkpoints.any(models.Checkpoint.id.in_(checkpoints))
         )
@@ -685,7 +688,6 @@ def delete_request(db: Session, db_request: models.Request) -> models.Request:
     return db_request
 
 # ------------- Approval CRUD -------------
-
 def create_approval(db: Session, approval: schemas.ApprovalCreate) -> models.Approval:
     db_approval = models.Approval(**approval.model_dump())
     # timestamp is server_default
@@ -713,7 +715,6 @@ def update_approval(db: Session, db_approval: models.Approval, approval_in: sche
     return db_approval
 
 # ------------- AuditLog CRUD -------------
-
 def create_audit_log(db: Session, actor_id: Optional[int], entity: str, entity_id: int, action: str, data: Optional[dict] = None) -> models.AuditLog:
     safe_data = jsonable_encoder(data)
     db_audit_log = models.AuditLog(
@@ -733,7 +734,6 @@ def get_audit_logs(db: Session, skip: int = 0, limit: int = 100) -> list[type[mo
     return db.query(models.AuditLog).options(selectinload(models.AuditLog.actor)).order_by(models.AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
 
 # ------------- Blacklist CRUD (Refactored) -------------
-
 def create_blacklist_entry(db: Session, entry_in: schemas.BlackListCreate, adder_id: int) -> models.BlackList:
     db_entry = models.BlackList(
         **entry_in.model_dump(exclude={'added_by'}), # Exclude added_by if present, as we're setting it from adder_id
@@ -822,7 +822,6 @@ def delete_blacklist_entry(db: Session, db_entry: models.BlackList, actor_id: Op
 
 
 # ------------- Notification CRUD -------------
-
 def create_notification(db: Session, user_id: int, message: str, request_id: Optional[int] = None) -> models.Notification:
     db_notification = models.Notification(
         user_id=user_id,
@@ -858,7 +857,6 @@ def mark_notification_as_read(db: Session, notification_id: int, user_id: int) -
 
 
 # ------------- VisitLog CRUD -------------
-
 def create_visit_log(db: Session, visit_log: schemas.VisitLogCreate) -> models.VisitLog:
     """
     Creates a new visit log entry.
@@ -883,7 +881,7 @@ def get_visit_log(db: Session, visit_log_id: int) -> Optional[models.VisitLog]:
         selectinload(models.VisitLog.request) # Eager load related request
     ).filter(models.VisitLog.id == visit_log_id).first()
 
-def get_visit_logs_by_request_id(db: Session, request_id: int, skip: int = 0, limit: int = 100) -> List[models.VisitLog]:
+def get_visit_logs_by_request_id(db: Session, request_id: int, skip: int = 0, limit: int = 100) -> list[type[models.VisitLog]]:
     """
     Retrieves all visit log entries for a given request ID.
     """
