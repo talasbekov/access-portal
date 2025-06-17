@@ -27,6 +27,69 @@ def is_dcs_officer(user: models.User) -> bool:
 def is_zd_deputy_head(user: models.User) -> bool:
     return user.role and user.role.code == ZD_DEPUTY_HEAD_ROLE_CODE
 
+
+# --- RBAC Functions for Visit Log History ---
+
+def can_user_access_visit_log_full_history(user: models.User) -> bool:
+    """
+    Checks if the user has a role that grants access to the full visit log history.
+    (DCS Officer, Admin, ZD Deputy Head)
+    """
+    if not user.role:
+        return False
+    return user.role.code in [DCS_OFFICER_ROLE_CODE, ADMIN_ROLE_CODE, ZD_DEPUTY_HEAD_ROLE_CODE]
+
+def can_user_access_visit_log_department_history(db: Session, user: models.User, request_creator_department_id: int) -> bool:
+    """
+    Checks if a Department Head or Deputy can access visit logs for requests
+    created by users in their department or its sub-departments.
+    """
+    if not user.role or not user.department_id:
+        return False
+
+    if user.role.code not in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
+        return False
+
+    # User is a Department Head or Deputy. Check if request_creator_department_id is their own or a descendant.
+    if user.department_id == request_creator_department_id:
+        return True
+
+    descendant_ids = crud.get_department_descendant_ids(db, user.department_id)
+    return request_creator_department_id in descendant_ids
+
+def can_user_access_visit_log_division_history(db: Session, user: models.User, request_creator_department_id: int) -> bool:
+    """
+    Checks if a Division Manager or Deputy can access visit logs for requests
+    created by users in their division.
+    """
+    if not user.role or not user.department or not user.department.type or not user.department_id:
+        return False
+
+    if user.role.code not in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
+        return False
+
+    # User is a Division Manager or Deputy. Check if their department is a DIVISION.
+    if user.department.type != models.DepartmentType.DIVISION:
+        return False # Role implies they should be in a Division, but data says otherwise.
+
+    # Check if the request_creator_department_id is the same as the Division Manager's department_id.
+    # This assumes a Division Manager manages requests from their own specific department ID,
+    # and that this department ID represents the entire division for this check.
+    # If a division spans multiple "department" entries that roll up to it, this logic might need adjustment
+    # or rely on get_department_descendant_ids if the division itself has sub-departments listed under it.
+    # For now, direct match or descendants if the division itself is a parent department.
+    if user.department_id == request_creator_department_id:
+        return True
+
+    # Additionally, if the division can have sub-departments and the manager oversees them for logs:
+    # descendant_ids = crud.get_department_descendant_ids(db, user.department_id)
+    # return request_creator_department_id in descendant_ids
+    # Based on the prompt, simpler check: "request_creator_department_id is the same as the user's department_id"
+    # The current implementation is direct match only. If broader (descendants) is needed, uncomment above.
+
+    return False # Default to false if direct match fails.
+
+
 def is_creator(user: models.User, resource: models.Request) -> bool: # Example with Request model
     """Checks if the user is the creator of the given resource."""
     return resource.creator_id == user.id

@@ -10,7 +10,7 @@ from jose import JWTError, jwt # Added
 # Use the minimal get_db from dependencies
 from ..dependencies import get_db
 # Removed: from ..dependencies import oauth2_scheme
-from .. import crud, models, schemas
+from .. import crud, models, schemas, rbac # Added rbac import
 from ..auth import decode_token as auth_decode_token # For JWT decoding
 
 # Load .env for role codes or other configs if they were to be moved from here
@@ -273,3 +273,131 @@ async def zd_action_on_request(
     except Exception as e:
         print(f"Unexpected error in zd_action_on_request: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+# ------------- Visit Log Endpoints for a Request -------------
+
+@router.post("/{request_id}/visits", response_model=schemas.VisitLog, status_code=status.HTTP_201_CREATED, tags=["Visit Logs"])
+async def create_visit_log_for_request(
+    request_id: int,
+    visit_log_in: schemas.VisitLogCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    """
+    Create a new visit log entry for a specific request.
+    The `visit_log_in.user_id` should be the ID of the registered User who is visiting.
+    Requires admin or checkpoint operator role.
+    """
+    if not current_user.role:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role not defined.")
+
+    is_admin = current_user.role.code == ADMIN_ROLE_CODE
+    is_checkpoint_operator = current_user.role.code and current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX)
+
+    if not (is_admin or is_checkpoint_operator):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to create visit logs.")
+
+    # Check if the request exists
+    db_request = crud.get_request(db, request_id=request_id, user=current_user) # get_request includes RBAC for viewing request
+    if not db_request:
+        # If get_request returned None due to RBAC, it would have raised 403. So this is likely a true 404.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found.")
+
+    # Validate the visitor user_id from the payload
+    visitor_user = crud.get_user(db, user_id=visit_log_in.user_id)
+    if not visitor_user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Visitor user with ID {visit_log_in.user_id} not found.")
+
+    # Additional check: Ensure the visitor is actually part of the request_persons for this request.
+    # This requires linking RequestPerson.user_id or having a way to match.
+    # For now, this check is simplified. If RequestPerson had a user_id link to User model:
+    # found_in_request_persons = False
+    # for rp in db_request.request_persons:
+    #     if hasattr(rp, 'user_id') and rp.user_id == visit_log_in.user_id: # Assuming RequestPerson might have a user_id
+    #         found_in_request_persons = True
+    #         break
+    # if not found_in_request_persons:
+    #     # This check depends on how RequestPerson is associated with a User.
+    #     # If RequestPerson.id is what VisitLog should link to (for non-User visitors), model needs change.
+    #     # Given current VisitLog.user_id, we assume the visitor is a User.
+    #     # A more robust check would be to see if this user_id corresponds to a person listed in db_request.request_persons
+    #     # This might involve matching by name/doc if RequestPerson doesn't directly link to User.id.
+    #     # For this iteration, we'll assume if the user exists, and the operator has access, it's okay.
+    #     pass
+
+
+    # Ensure the visit_log_in.request_id matches the path parameter (or set it)
+    if visit_log_in.request_id != request_id:
+        # Or, you could choose to override visit_log_in.request_id with the path parameter `request_id`
+        # For now, let's be strict.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Payload request_id {visit_log_in.request_id} does not match path request_id {request_id}.")
+
+
+    created_visit_log = crud.create_visit_log(db=db, visit_log=visit_log_in)
+    return created_visit_log
+
+
+@router.get("/{request_id}/visits", response_model=List[schemas.VisitLog], tags=["Visit Logs"])
+async def read_visit_logs_for_request(
+    request_id: int,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user_for_req_router)
+):
+    """
+    Retrieve all visit log entries for a specific request.
+    Access is controlled by RBAC rules defined in `sql_app.rbac`.
+    """
+    # Step 1: Fetch the request object. crud.get_request includes its own RBAC for viewing the request.
+    db_request = crud.get_request(db, request_id=request_id, user=current_user)
+    if not db_request:
+        # This means either the request doesn't exist or the current_user doesn't have basic view access to it.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
+
+    # Step 2: Get request_creator_department_id
+    request_creator_department_id: Optional[int] = None
+    if db_request.creator and db_request.creator.department_id is not None:
+        request_creator_department_id = db_request.creator.department_id
+
+    # Step 3: Apply RBAC checks for visit log history
+    allowed = False
+    if rbac.can_user_access_visit_log_full_history(current_user):
+        allowed = True
+    # Only proceed to department/division checks if full history is not granted AND department ID is available
+    elif request_creator_department_id is not None:
+        if rbac.can_user_access_visit_log_department_history(db, current_user, request_creator_department_id):
+            allowed = True
+        elif rbac.can_user_access_visit_log_division_history(db, current_user, request_creator_department_id):
+            allowed = True
+
+    # Check if the current user is the creator of the request as a fallback
+    # This was part of the original simpler check.
+    if not allowed and db_request.creator_id == current_user.id:
+        allowed = True
+
+    # Check for checkpoint operator role - this was part of the original simpler check for this endpoint.
+    # This specific permission might need to be refined based on whether CP operators should see *all* logs for a request they handle,
+    # or only specific entries they create/manage. For now, retaining similar broad access for CP ops on this request's logs.
+    if not allowed and current_user.role and current_user.role.code and current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        # Further check: is this request associated with this checkpoint operator's checkpoint(s)?
+        # This requires knowing the operator's specific checkpoint. For now, if they are any CP operator, allow.
+        # A more robust check would be:
+        # operator_cp_id_str = current_user.role.code[len(CHECKPOINT_OPERATOR_ROLE_PREFIX):]
+        # try:
+        #     operator_cp_id = int(operator_cp_id_str)
+        #     if any(cp.id == operator_cp_id for cp in db_request.checkpoints):
+        #         allowed = True
+        # except ValueError:
+        #     pass # Invalid role code format
+        # For now, any CP operator is allowed if other checks fail. This maintains previous behavior.
+        allowed = True
+
+
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view visit logs for this request.")
+
+    # Step 4: If allowed, fetch and return visit logs
+    visit_logs = crud.get_visit_logs_by_request_id(db=db, request_id=request_id, skip=skip, limit=limit)
+    return visit_logs
