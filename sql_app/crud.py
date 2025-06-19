@@ -247,26 +247,33 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     print(request_in.duration)
 
     can_create = False
-    if request_in.duration == RequestDuration.LONG_TERM: # Multi-day pass
-        # Creator must be Department Head or Deputy for any department type that is not a Division.
-        # Or Division Manager/Deputy if their department IS a Division (implicitly a higher level).
-        if creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE]:
+    # Determine if the creator's department is a Division
+    is_division = creator_department_type == models.DepartmentType.DIVISION
+    # Define allowed roles based on department type
+    if is_division:
+        allowed_roles = {DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE, ADMIN_ROLE_CODE}
+    else:
+        allowed_roles = {DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE}
+    if request_in.duration == RequestDuration.LONG_TERM:
+        # Multi-day pass always goes to DCS
+        request_in.status = schemas.RequestStatusEnum.PENDING_DCS.value
+        # Check if creator has permission for multi-day
+        if creator_role_code in allowed_roles:
             can_create = True
-        # Implicitly, if a Div Manager creates a multi-day pass for their division, it's allowed.
-        # This rule might need refinement: e.g. Dept Heads of depts within a Division.
-        # Current TS: Multi-day: Creator must be Department Head or Deputy.
-    elif request_in.duration == RequestDuration.SHORT_TERM: # Single-day pass
-        # Creator must be Division Manager or Deputy. Department type must be DIVISION.
-        # Or Department Head/Deputy for departments that are NOT divisions (implicitly lower level).
-        if creator_role_code in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE] and \
-           creator_department_type == models.DepartmentType.DIVISION:
-            can_create = True
-        elif creator_role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE] and \
-             creator_department_type != models.DepartmentType.DIVISION: # Dept head of a non-division unit
+    elif request_in.duration == RequestDuration.SHORT_TERM:
+        # Single-day pass: status depends on number of persons
+        if len(request_in.request_persons) <= 3:
+            request_in.status = schemas.RequestStatusEnum.PENDING_ZD.value
+        else:
+            request_in.status = schemas.RequestStatusEnum.PENDING_DCS.value
+        # Check if creator has permission for single-day
+        if creator_role_code in allowed_roles:
             can_create = True
     else:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Неправильно указан duration {request_in.duration}. Определите вариант краткосрочная заявка или долгосрочная.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Неправильно указан duration {request_in.duration}. Определите вариант краткосрочная заявка или долгосрочная."
+        )
 
     # Admin override - can create any type of pass
     if creator_role_code == ADMIN_ROLE_CODE:
@@ -295,7 +302,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     db_request = models.Request(
         creator_id=creator.id,
-        status=request_in.status.value,
+        status=request_in.status,
         start_date=request_in.start_date,
         end_date=request_in.end_date,
         arrival_purpose=request_in.arrival_purpose,
