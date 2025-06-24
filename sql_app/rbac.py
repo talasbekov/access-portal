@@ -1,7 +1,6 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from . import models, schemas, crud, constants  # Import constants
-from .schemas import RequestStatusEnum
+from . import models, schemas, crud, constants
 
 # Role codes are now imported from constants
 

@@ -6,13 +6,14 @@ from fastapi.security import OAuth2PasswordBearer # Added
 from jose import JWTError, jwt # Added
 from ..dependencies import get_db
 from .. import crud, models, schemas, rbac
+from ..constants import *
 from ..auth import decode_token as auth_decode_token
 from ..auth_dependencies import (
     get_current_user,
     get_current_active_user,
     get_admin_user,
     get_security_officer_user,
-    get_checkpoint_operator_user
+    get_checkpoint_operator_user, get_usb_user, get_as_user
 )
 from dotenv import load_dotenv
 load_dotenv()
@@ -366,7 +367,7 @@ async def read_visit_logs_for_request(
 
     # Step 3: Apply RBAC checks for visit log history
     allowed = False
-    if rbac.can_user_access_visit_log_full_history(current_user):
+    if rbac.can_view_all_visit_logs(current_user):
         allowed = True
     # Only proceed to department/division checks if full history is not granted AND department ID is available
     elif request_creator_department_id is not None:

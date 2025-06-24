@@ -231,14 +231,14 @@ def approve_request_person(db: Session, request_person_id: int, approver: models
         raise ResourceNotFoundException("Request", db_person.request_id) # Should not happen if person exists
 
     allowed_request_statuses_for_modification = [
-        schemas.RequestStatusEnum.PENDING_DCS.value,
-        schemas.RequestStatusEnum.APPROVED_DCS.value, # If DCS approves, then ZD can act on individuals
-        schemas.RequestStatusEnum.PENDING_ZD.value
+        schemas.RequestStatusEnum.PENDING_USB.value,
+        schemas.RequestStatusEnum.APPROVED_USB.value, # If DCS approves, then ZD can act on individuals
+        schemas.RequestStatusEnum.PENDING_AS.value
     ]
     if db_request.status not in allowed_request_statuses_for_modification:
         raise InvalidRequestStateException(
             actual_status=db_request.status,
-            expected_status="a state allowing individual approvals (e.g., PENDING_DCS, PENDING_ZD)",
+            expected_status="a state allowing individual approvals (e.g., PENDING_USB, PENDING_AS)",
             detail=f"Cannot approve individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual approvals at this stage."
         )
 
@@ -280,14 +280,14 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
         raise ResourceNotFoundException("Request", db_person.request_id)
 
     allowed_request_statuses_for_modification = [
-        schemas.RequestStatusEnum.PENDING_DCS.value,
-        schemas.RequestStatusEnum.APPROVED_DCS.value,
-        schemas.RequestStatusEnum.PENDING_ZD.value
+        schemas.RequestStatusEnum.PENDING_USB.value,
+        schemas.RequestStatusEnum.APPROVED_USB.value,
+        schemas.RequestStatusEnum.PENDING_AS.value
     ]
     if db_request.status not in allowed_request_statuses_for_modification:
         raise InvalidRequestStateException(
             actual_status=db_request.status,
-            expected_status="a state allowing individual rejections (e.g., PENDING_DCS, PENDING_ZD)",
+            expected_status="a state allowing individual rejections (e.g., PENDING_USB, PENDING_AS)",
             detail=f"Cannot reject individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual rejections at this stage."
         )
 
@@ -783,17 +783,17 @@ def approve_request_step(db: Session, request_id: int, approver: models.User, co
     approval_step: Optional[schemas.ApprovalStepEnum] = None
 
     current_status = db_request.status
-    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+    if current_status == schemas.RequestStatusEnum.PENDING_USB.value:
         if not rbac.is_dcs_officer(approver):
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS approval.")
-        new_status_val = schemas.RequestStatusEnum.APPROVED_DCS.value
+        new_status_val = schemas.RequestStatusEnum.APPROVED_USB.value
         approval_step = schemas.ApprovalStepEnum.DCS
         # TODO: Notify ZD Deputy Head that request is ready for ZD approval
-    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
-         current_status == schemas.RequestStatusEnum.PENDING_ZD.value: # PENDING_ZD might be set if workflow requires explicit ZD queue
+    elif current_status == schemas.RequestStatusEnum.APPROVED_USB.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_AS.value: # PENDING_AS might be set if workflow requires explicit ZD queue
         if not rbac.is_zd_deputy_head(approver):
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD approval.")
-        new_status_val = schemas.RequestStatusEnum.APPROVED_ZD.value
+        new_status_val = schemas.RequestStatusEnum.APPROVED_AS.value
         approval_step = schemas.ApprovalStepEnum.ZD
         # TODO: Notify requestor and CP operators
     else:
@@ -826,17 +826,17 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
     approval_step: Optional[schemas.ApprovalStepEnum] = None
 
     current_status = db_request.status
-    if current_status == schemas.RequestStatusEnum.PENDING_DCS.value:
+    if current_status == schemas.RequestStatusEnum.PENDING_USB.value:
         if not rbac.is_dcs_officer(approver):
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for DCS decline.")
-        new_status_val = schemas.RequestStatusEnum.DECLINED_DCS.value
+        new_status_val = schemas.RequestStatusEnum.DECLINED_USB.value
         approval_step = schemas.ApprovalStepEnum.DCS
         # TODO: Notify requestor
-    elif current_status == schemas.RequestStatusEnum.APPROVED_DCS.value or \
-         current_status == schemas.RequestStatusEnum.PENDING_ZD.value:
+    elif current_status == schemas.RequestStatusEnum.APPROVED_USB.value or \
+         current_status == schemas.RequestStatusEnum.PENDING_AS.value:
         if not rbac.is_zd_deputy_head(approver):
             raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not authorized for ZD decline.")
-        new_status_val = schemas.RequestStatusEnum.DECLINED_ZD.value
+        new_status_val = schemas.RequestStatusEnum.DECLINED_AS.value
         approval_step = schemas.ApprovalStepEnum.ZD
         # TODO: Notify requestor
     else:
@@ -859,14 +859,13 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
 
 
 def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> list[type[models.Request]]:
-    from . import rbac
     from fastapi import status as fastapi_status
 
-    if not (user.role and user.role.code.startswith(rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
+    if not (user.role and user.role.code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX)):
          raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
 
     # Optional: More specific check if operator is for this specific checkpoint_id
-    # expected_role_code = f"{rbac.CHECKPOINT_OPERATOR_ROLE_PREFIX}{checkpoint_id}"
+    # expected_role_code = f"{constants.CHECKPOINT_OPERATOR_ROLE_PREFIX}{checkpoint_id}"
     # if user.role.code != expected_role_code:
     #     raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail=f"User not authorized for checkpoint {checkpoint_id}.")
 
@@ -877,7 +876,7 @@ def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.Us
                 models.Checkpoint.id == checkpoint_id
             ),
             models.Request.status.in_([
-                schemas.RequestStatusEnum.APPROVED_ZD.value,
+                schemas.RequestStatusEnum.APPROVED_AS.value,
                 schemas.RequestStatusEnum.ISSUED.value
             ])
         )
