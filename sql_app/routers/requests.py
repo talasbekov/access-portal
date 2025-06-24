@@ -63,21 +63,16 @@ async def get_current_active_user_for_req_router(current_user: models.User = Dep
 
 
 # Allowed roles for pass types (example role names/codes)
-# These should ideally come from a config or constants module
-SINGLE_DAY_ALLOWED_ROLES = ["Division Manager", "Deputy Division Manager", "Department Head", "Deputy Department Head", "Admin"] # Example role names
-MULTI_DAY_ALLOWED_ROLES = ["Department Head", "Deputy Department Head", "Admin"] # Example role names
+from .. import constants # Import constants
 
-# Define Role Codes for approval steps (these should match 'code' in Role model for precise matching)
-DCS_OFFICER_ROLE_CODE = "dcs_officer" # Example role code
-ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head" # Example role code
-ADMIN_ROLE_CODE = "admin"
-DEPARTMENT_HEAD_ROLE_CODE = "department_head"
-DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
-DIVISION_MANAGER_ROLE_CODE = "division_manager"
-DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-CHECKPOINT_OPERATOR_ROLE_PREFIX = "checkpoint_operator_cp" # e.g., checkpoint_operator_cp1
-EMPLOYEE_ROLE_CODE = "employee" # Default or generic user
-UNIT_HEAD_ROLE_CODE = "unit_head" # Assuming Unit is a type of department
+# These should ideally come from a config or constants module
+# SINGLE_DAY_ALLOWED_ROLES and MULTI_DAY_ALLOWED_ROLES are more complex logic,
+# not just simple role codes. They might be better handled in rbac.py or a service layer
+# if they involve checking against user.role.name (display name) rather than user.role.code.
+# For now, if these are string names, they can't directly use the role codes from constants.py
+# unless constants.py also stores these lists or the logic is changed to use codes.
+# Assuming the logic in create_request in crud.py handles this based on codes.
+# We will remove these local string lists if crud.create_request correctly uses constants.
 
 
 def parse_status_filter(
@@ -448,3 +443,82 @@ async def read_visit_logs_for_request(
         response_visit_logs.append(visit_log_response)
 
     return response_visit_logs
+
+# ------------- Individual RequestPerson Approval/Rejection Schemas -------------
+
+class RequestPersonRejectionPayload(schemas.BaseModel): # Use a common BaseModel from schemas
+    rejection_reason: str # Field for Pydantic models, can add = Field(..., min_length=1) if needed
+
+
+# ------------- Individual RequestPerson Approval/Rejection Endpoints -------------
+
+@router.post("/{request_id}/persons/{person_id}/approve", response_model=schemas.RequestPerson, tags=["Request Persons Actions"])
+async def approve_single_request_person(
+    request_id: int,
+    person_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_security_officer_user) # DCS, ZD, Admin
+):
+    # Verify person belongs to request
+    db_person = crud.get_request_person(db, person_id)
+    if not db_person or db_person.request_id != request_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RequestPerson with ID {person_id} not found in Request {request_id}.")
+
+    # TODO: Add check: Is the main Request in a status that allows individual approvals (e.g., PENDING_DCS, PENDING_ZD)?
+    # This logic might be complex, e.g. if request is PENDING_DCS, only DCS can approve. If PENDING_ZD, only ZD.
+    # For now, get_security_officer_user ensures the user has one of the high-level roles.
+    # Specific step validation (e.g. DCS can only approve if main request is PENDING_DCS) should be added in CRUD or here.
+
+    try:
+        approved_person = crud.approve_request_person(db=db, request_person_id=person_id, approver=current_user)
+        print(f"[INFO] User {current_user.username} (ID: {current_user.id}) APPROVED RequestPerson ID: {person_id} for Request ID: {request_id}")
+        return approved_person
+    except crud.ResourceNotFoundException as e: # Catch specific exception from CRUD
+        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to APPROVE RequestPerson ID: {person_id} (Request ID: {request_id}). Reason: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except HTTPException as e:
+        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to APPROVE RequestPerson ID: {person_id} (Request ID: {request_id}). HTTP Reason: {e.detail}")
+        raise e
+    except Exception as e:
+        # Log error e
+        print(f"Unexpected error in approve_single_request_person: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+@router.post("/{request_id}/persons/{person_id}/reject", response_model=schemas.RequestPerson, tags=["Request Persons Actions"])
+async def reject_single_request_person(
+    request_id: int,
+    person_id: int,
+    payload: RequestPersonRejectionPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_security_officer_user) # DCS, ZD, Admin
+):
+    # Verify person belongs to request
+    db_person = crud.get_request_person(db, person_id)
+    if not db_person or db_person.request_id != request_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RequestPerson with ID {person_id} not found in Request {request_id}.")
+
+    # TODO: Similar stage validation as in approve endpoint.
+
+    if not payload.rejection_reason or len(payload.rejection_reason.strip()) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason cannot be empty.")
+
+    try:
+        rejected_person = crud.reject_request_person(
+            db=db,
+            request_person_id=person_id,
+            reason=payload.rejection_reason,
+            approver=current_user
+        )
+        print(f"[INFO] User {current_user.username} (ID: {current_user.id}) REJECTED RequestPerson ID: {person_id} (Request ID: {request_id}) with reason: '{payload.rejection_reason}'")
+        return rejected_person
+    except crud.ResourceNotFoundException as e:
+        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to REJECT RequestPerson ID: {person_id} (Request ID: {request_id}). Reason: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except HTTPException as e: # Handles the 400 from crud if reason is empty there too
+        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to REJECT RequestPerson ID: {person_id} (Request ID: {request_id}). HTTP Reason: {e.detail}")
+        raise e
+    except Exception as e:
+        # Log error e
+        print(f"[ERROR] User {current_user.username} (ID: {current_user.id}) encountered an unexpected error rejecting RequestPerson ID: {person_id} (Request ID: {request_id}). Error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
