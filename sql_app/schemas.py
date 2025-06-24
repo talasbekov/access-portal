@@ -36,6 +36,11 @@ class RequestStatusEnum(str, enum.Enum):
     ISSUED = "ISSUED" # Pass issued
     CLOSED = "CLOSED" # Request completed or expired
 
+class RequestPersonStatusEnum(str, enum.Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
 
 # ------------- Department Schemas -------------
 class DepartmentBase(BaseModel):
@@ -195,23 +200,42 @@ class RequestPersonBase(BaseModel):
     gender: Optional[GenderEnum]
     citizenship: str
     company: str
-    is_entered: Optional[bool]
+    is_entered: Optional[bool] = False # Default to False
+    status: RequestPersonStatusEnum = RequestPersonStatusEnum.PENDING
+    rejection_reason: Optional[str] = None
 
 class RequestPersonCreate(RequestPersonBase):
-    pass # request_id removed as per plan, will be set by path/system
-
-class RequestPersonUpdate(RequestPersonBase):
+    # status and rejection_reason will use defaults from RequestPersonBase
+    # or can be overridden if provided.
     pass
+
+class RequestPersonUpdate(BaseModel): # Changed from RequestPersonBase to allow partial updates
+    firstname: Optional[str] = None
+    lastname: Optional[str] = None
+    surname: Optional[str] = None
+    birth_date: Optional[date] = None
+    doc_type: Optional[str] = None
+    doc_number: Optional[str] = None
+    doc_start_date: Optional[date] = None
+    doc_end_date: Optional[date] = None
+    gender: Optional[GenderEnum] = None
+    citizenship: Optional[str] = None
+    company: Optional[str] = None
+    # is_entered is usually system-updated, not by user directly in this context
+    status: Optional[RequestPersonStatusEnum] = None
+    rejection_reason: Optional[str] = None
 
 
 class RequestPersonInDBBase(RequestPersonBase):
     id: int
     request_id: int
+    # status and rejection_reason are inherited from RequestPersonBase
 
     class Config:
         from_attributes = True
 
 class RequestPerson(RequestPersonInDBBase):
+    # All fields from RequestPersonInDBBase are inherited
     pass
 
 
@@ -428,11 +452,16 @@ class Notification(NotificationInDBBase):
 
 # ------------- VisitLog Schemas -------------
 
-# Simplified User schema for VisitLog
-class UserForVisitLog(BaseModel):
+# Simplified RequestPerson schema for VisitLog
+class RequestPersonForVisitLog(BaseModel):
     id: int
-    username: str
-    full_name: Optional[str] = None
+    firstname: str
+    lastname: str
+    surname: Optional[str] = None
+    company: Optional[str] = None
+    status: Optional[RequestPersonStatusEnum] = None # To show status in logs
+    rejection_reason: Optional[str] = None          # To show rejection reason in logs
+
 
     class Config:
         from_attributes = True
@@ -452,7 +481,7 @@ class RequestForVisitLog(BaseModel):
 
 class VisitLogBase(BaseModel):
     request_id: int
-    user_id: int # Represents the visitor
+    request_person_id: int # Represents the visitor (RequestPerson)
     check_out_time: Optional[datetime] = None
 
 class VisitLogCreate(VisitLogBase):
@@ -472,4 +501,4 @@ class VisitLogInDBBase(VisitLogBase):
 
 class VisitLog(VisitLogInDBBase):
     request: Optional[RequestForVisitLog] = None
-    user: Optional[UserForVisitLog] = None # Represents the visitor
+    request_person: Optional[RequestPersonForVisitLog] = None # Represents the visitor

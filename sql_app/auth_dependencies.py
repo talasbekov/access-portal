@@ -66,13 +66,15 @@ class AuthDependencies:
             )
         return current_user
 
+from .. import constants # Import constants
+
     @staticmethod
     def get_admin_user(  # Убрали async здесь
         current_user: models.User = Depends(get_current_active_user)  # Правильная зависимость
     ) -> models.User:
         """Требовать роль администратора"""
-        from .rbac import is_admin
-        if not is_admin(current_user):
+        # from .rbac import is_admin # is_admin likely uses constants.ADMIN_ROLE_CODE
+        if not current_user.role or current_user.role.code != constants.ADMIN_ROLE_CODE:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin privileges required"
@@ -84,7 +86,12 @@ class AuthDependencies:
         current_user: models.User = Depends(get_current_active_user)  # Правильная зависимость
     ) -> models.User:
         """Требовать привилегии офицера безопасности или выше"""
-        allowed_roles = ["security_officer", "dcs_officer", "zd_deputy_head", "admin"]
+        allowed_roles = [
+            constants.SECURITY_OFFICER_ROLE_CODE,
+            constants.DCS_OFFICER_ROLE_CODE,
+            constants.ZD_DEPUTY_HEAD_ROLE_CODE,
+            constants.ADMIN_ROLE_CODE
+        ]
         if not current_user.role or current_user.role.code not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -97,11 +104,20 @@ class AuthDependencies:
         current_user: models.User = Depends(get_current_active_user)  # Правильная зависимость
     ) -> models.User:
         """Требовать роль оператора КПП"""
-        from .rbac import CHECKPOINT_OPERATOR_ROLE_PREFIX
-        if not current_user.role or not current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        if not current_user.role or not current_user.role.code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Checkpoint operator privileges required"
+            )
+        return current_user
+
+    @staticmethod
+    def get_kpp_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль КПП"""
+        if not current_user.role or current_user.role.code != constants.KPP_ROLE_CODE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="KPP privileges required"
             )
         return current_user
 
@@ -111,3 +127,4 @@ get_current_active_user = AuthDependencies.get_current_active_user
 get_admin_user = AuthDependencies.get_admin_user
 get_security_officer_user = AuthDependencies.get_security_officer_user
 get_checkpoint_operator_user = AuthDependencies.get_checkpoint_operator_user
+get_kpp_user = AuthDependencies.get_kpp_user # Exporting the new dependency

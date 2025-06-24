@@ -1,56 +1,96 @@
 from sqlalchemy.orm import Session
-from . import models, schemas, crud
+from . import models, schemas, crud, constants # Import constants
 from .schemas import RequestStatusEnum
 
-# Role Codes - define them centrally here or import from a constants file/schemas if they exist there
-# For now, define here for clarity within rbac.py
-ADMIN_ROLE_CODE = "admin"
-SECURITY_OFFICER_ROLE_CODE = "security_officer"
-DCS_OFFICER_ROLE_CODE = "dcs_officer"
-ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head"
-DEPARTMENT_HEAD_ROLE_CODE = "department_head" # Assuming a generic code for all dept heads
-DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
-DIVISION_MANAGER_ROLE_CODE = "division_manager" # Assuming a generic code
-DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-CHECKPOINT_OPERATOR_ROLE_PREFIX = "KPP_"
-EMPLOYEE_ROLE_CODE = "employee"
+# Role codes are now imported from constants
 
 def is_admin(user: models.User) -> bool:
-    return user.role and user.role.code == ADMIN_ROLE_CODE
+    return user.role and user.role.code == constants.ADMIN_ROLE_CODE
 
-def is_security_officer(user: models.User) -> bool:
-    return user.role and user.role.code == SECURITY_OFFICER_ROLE_CODE
+def is_security_officer(user: models.User) -> bool: # Not used directly in this file, but good for consistency
+    return user.role and user.role.code == constants.SECURITY_OFFICER_ROLE_CODE
 
 def is_dcs_officer(user: models.User) -> bool:
-    return user.role and user.role.code == DCS_OFFICER_ROLE_CODE
+    return user.role and user.role.code == constants.DCS_OFFICER_ROLE_CODE
 
 def is_zd_deputy_head(user: models.User) -> bool:
-    return user.role and user.role.code == ZD_DEPUTY_HEAD_ROLE_CODE
+    return user.role and user.role.code == constants.ZD_DEPUTY_HEAD_ROLE_CODE
 
 
-# --- RBAC Functions for Visit Log History ---
+# --- RBAC Functions for Visit Log Viewing ---
 
-def can_user_access_visit_log_full_history(user: models.User) -> bool:
+def can_view_all_visit_logs(user: models.User) -> bool:
     """
-    Checks if the user has a role that grants access to the full visit log history.
+    Checks if the user has a role that grants access to all visit logs.
     (DCS Officer, Admin, ZD Deputy Head)
     """
     if not user.role:
         return False
-    return user.role.code in [DCS_OFFICER_ROLE_CODE, ADMIN_ROLE_CODE, ZD_DEPUTY_HEAD_ROLE_CODE]
+    return user.role.code in [
+        constants.DCS_OFFICER_ROLE_CODE,
+        constants.ADMIN_ROLE_CODE,
+        constants.ZD_DEPUTY_HEAD_ROLE_CODE
+    ]
 
+def get_allowed_creator_department_ids_for_visit_logs(db: Session, user: models.User) -> Optional[List[int]]:
+    """
+    Returns a list of department IDs whose requests' visit logs the user is allowed to see.
+    Returns None if user can see all logs (handled by can_view_all_visit_logs).
+    Returns an empty list if user is a manager but has no applicable departments or sub-departments.
+    """
+    if not user.role or not user.department_id:
+        return [] # No role or department, cannot see any logs based on department hierarchy
+
+    role_code = user.role.code
+    user_dept_id = user.department_id
+
+    # Department Heads, Deputy Dept Heads, Unit Heads, Deputy Unit Heads
+    manager_roles = [
+        constants.DEPARTMENT_HEAD_ROLE_CODE,
+        constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE,
+        constants.UNIT_HEAD_ROLE_CODE,
+        constants.DEPUTY_UNIT_HEAD_ROLE_CODE
+    ]
+    if role_code in manager_roles:
+        # They see their own department and all its children.
+        # For a Unit Head, if their unit (department) has no children, this will just be their unit's ID.
+        return crud.get_department_descendant_ids(db, user_dept_id)
+
+    # Division Managers and Deputies
+    division_manager_roles = [
+        constants.DIVISION_MANAGER_ROLE_CODE,
+        constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE
+    ]
+    if role_code in division_manager_roles:
+        # They see their own division (which is a department) and all its children departments.
+        if user.department and user.department.type == models.DepartmentType.DIVISION:
+            return crud.get_department_descendant_ids(db, user_dept_id)
+        return [] # Is a division manager but not linked to a department of type DIVISION - restricted
+
+    return [] # Default for other roles not covered above (e.g., employee, KPP) - they don't see logs via this mechanism
+
+
+# Kept for potential direct use, but get_allowed_creator_department_ids_for_visit_logs is preferred for the list view
 def can_user_access_visit_log_department_history(db: Session, user: models.User, request_creator_department_id: int) -> bool:
     """
     Checks if a Department Head or Deputy can access visit logs for requests
     created by users in their department or its sub-departments.
+    Also includes Unit Heads/Deputies for their specific unit (department).
     """
     if not user.role or not user.department_id:
         return False
 
-    if user.role.code not in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
+    allowed_manager_roles = [
+        constants.DEPARTMENT_HEAD_ROLE_CODE,
+        constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE,
+        constants.UNIT_HEAD_ROLE_CODE,
+        constants.DEPUTY_UNIT_HEAD_ROLE_CODE
+    ]
+    if user.role.code not in allowed_manager_roles:
         return False
 
-    # User is a Department Head or Deputy. Check if request_creator_department_id is their own or a descendant.
+    # User is a Department/Unit Head or Deputy. Check if request_creator_department_id is their own or a descendant.
+    # For Unit heads, this usually means their own department_id only unless units can have sub-units.
     if user.department_id == request_creator_department_id:
         return True
 
@@ -65,7 +105,11 @@ def can_user_access_visit_log_division_history(db: Session, user: models.User, r
     if not user.role or not user.department or not user.department.type or not user.department_id:
         return False
 
-    if user.role.code not in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
+    allowed_division_roles = [
+        constants.DIVISION_MANAGER_ROLE_CODE,
+        constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE
+    ]
+    if user.role.code not in allowed_division_roles:
         return False
 
     # User is a Division Manager or Deputy. Check if their department is a DIVISION.
@@ -118,14 +162,24 @@ def can_view_request_based_on_role_and_department(db: Session, user: models.User
     if not user.role or not user.department_id or not request_creator.department_id:
         return False # User or creator not properly configured
 
-    # Department Head or Deputy: Can see requests from their own department and its children.
-    if user.role.code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
+    # Department Head or Deputy or Unit Head/Deputy: Can see requests from their own department and its children.
+    department_manager_roles = [
+        constants.DEPARTMENT_HEAD_ROLE_CODE,
+        constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE,
+        constants.UNIT_HEAD_ROLE_CODE,
+        constants.DEPUTY_UNIT_HEAD_ROLE_CODE
+    ]
+    if user.role.code in department_manager_roles:
         # Check if request_creator.department_id is user.department_id or one of its children
         return is_user_in_department_or_children(db, request_creator, user.department_id)
 
     # Division Manager or Deputy: Can see requests from their own division.
     # Assumes their user.department_id points to a 'DIVISION' type department.
-    if user.role.code in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
+    division_manager_roles = [
+        constants.DIVISION_MANAGER_ROLE_CODE,
+        constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE
+    ]
+    if user.role.code in division_manager_roles:
         if user.department and user.department.type == models.DepartmentType.DIVISION: # Direct check on enum member
             # Check if request_creator.department_id is within this division (same department or child if division has sub-depts)
              return is_user_in_department_or_children(db, request_creator, user.department_id)
@@ -154,14 +208,14 @@ def can_user_view_request(
 
     # 4. Операторы КПП видят «свои» заявки со статусами APPROVED_ZD и ISSUED
     role = user.role
-    if role and role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+    if role and role.code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):
         # Из кода роли вычленяем ID КПП
-        # Например, код "CP_OP_5" → префикс "CP_OP_" → цифра "5"
-        cp_id_str = role.code[len(CHECKPOINT_OPERATOR_ROLE_PREFIX):]
+        # Например, код "checkpoint_operator_cp5" -> "5"
+        cp_id_str = role.code[len(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):]
         try:
             cp_id = int(cp_id_str)
         except ValueError:
-            return False
+            return False # Invalid role code format
 
         # Проверяем, что в списке request.checkpoints есть нужный КПП
         has_checkpoint = any(cp.id == cp_id for cp in request.checkpoints)
@@ -200,22 +254,25 @@ def get_request_visibility_filters_for_user(db: Session, user: models.User) -> d
 
     role_code = user.role.code
 
-    if role_code in [ADMIN_ROLE_CODE, DCS_OFFICER_ROLE_CODE, ZD_DEPUTY_HEAD_ROLE_CODE]:
+    if role_code in [constants.ADMIN_ROLE_CODE, constants.DCS_OFFICER_ROLE_CODE, constants.ZD_DEPUTY_HEAD_ROLE_CODE]:
         filters["is_unrestricted"] = True
-    elif role_code in [DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE]:
+    elif role_code in [constants.DEPARTMENT_HEAD_ROLE_CODE, constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, constants.UNIT_HEAD_ROLE_CODE, constants.DEPUTY_UNIT_HEAD_ROLE_CODE]:
         if user.department_id:
+            # For unit heads, this will correctly give their specific unit's ID if units don't have children.
+            # If units can have children and unit heads should see them, get_department_descendant_ids will handle it.
             filters["department_ids"] = crud.get_department_descendant_ids(db, user.department_id)
-        else: # Head of no department, can't see any based on this role
-            filters["department_ids"] = [] # Empty list means no results based on this
-    elif role_code in [DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
+        else:
+            filters["department_ids"] = []
+    elif role_code in [constants.DIVISION_MANAGER_ROLE_CODE, constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
         if user.department_id and user.department and user.department.type == models.DepartmentType.DIVISION:
-            filters["exact_department_id"] = user.department_id
-        else: # Not a manager of a division
-            filters["exact_department_id"] = -1 # Impossible ID to ensure no results
-    # Операторы КПП
-    elif role_code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
-        suffix = role_code[len(CHECKPOINT_OPERATOR_ROLE_PREFIX):]
-        print(suffix)
+            # Division managers see requests from creators within their entire division,
+            # so we need all department IDs under this division.
+            filters["department_ids"] = crud.get_department_descendant_ids(db, user.department_id)
+            # filters["exact_department_id"] = user.department_id # Old logic, changed to department_ids
+        else:
+            filters["department_ids"] = []
+    elif role_code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        suffix = role_code[len(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):]
         try:
             cp_id = int(suffix)
             filters["checkpoint_id"] = cp_id
@@ -224,10 +281,9 @@ def get_request_visibility_filters_for_user(db: Session, user: models.User) -> d
                 schemas.RequestStatusEnum.ISSUED.value,
             ]
         except ValueError:
-            # невалидный код роли — никаких заявок
-            filters["checkpoint_id"] = -1
+            filters["checkpoint_id"] = -1 # Invalid role code
 
-    # остальные роли — свои заявки
+    # Fallback for other roles (e.g. EMPLOYEE_ROLE_CODE or any unhandled manager role)
     else:
         filters["creator_id"] = user.id
 

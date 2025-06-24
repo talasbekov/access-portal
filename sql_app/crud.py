@@ -5,9 +5,9 @@ from datetime import date
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import or_
 
-from . import models, schemas, auth, rbac
+from . import models, schemas, auth, rbac, constants # Added constants
 from .models import RequestDuration
-from .routers.requests import ADMIN_ROLE_CODE
+# from .routers.requests import ADMIN_ROLE_CODE # Will use constants.ADMIN_ROLE_CODE
 from .error_handlers import (
     BlacklistedPersonException,
     ResourceNotFoundException,
@@ -216,75 +216,150 @@ def create_request_person(db: Session, request_person: schemas.RequestPersonBase
     # db.refresh(db_request_person)
     return db_request_person
 
+
+def get_request_person(db: Session, request_person_id: int) -> Optional[models.RequestPerson]:
+    return db.query(models.RequestPerson).filter(models.RequestPerson.id == request_person_id).first()
+
+def approve_request_person(db: Session, request_person_id: int, approver: models.User) -> models.RequestPerson:
+    db_person = get_request_person(db, request_person_id)
+    if not db_person:
+        raise ResourceNotFoundException("RequestPerson", request_person_id)
+
+    # Check main request status
+    db_request = db.query(models.Request).filter(models.Request.id == db_person.request_id).first()
+    if not db_request:
+        raise ResourceNotFoundException("Request", db_person.request_id) # Should not happen if person exists
+
+    allowed_request_statuses_for_modification = [
+        schemas.RequestStatusEnum.PENDING_DCS.value,
+        schemas.RequestStatusEnum.APPROVED_DCS.value, # If DCS approves, then ZD can act on individuals
+        schemas.RequestStatusEnum.PENDING_ZD.value
+    ]
+    if db_request.status not in allowed_request_statuses_for_modification:
+        raise InvalidRequestStateException(
+            actual_status=db_request.status,
+            expected_status="a state allowing individual approvals (e.g., PENDING_DCS, PENDING_ZD)",
+            detail=f"Cannot approve individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual approvals at this stage."
+        )
+
+    # TODO: Further refine based on approver's specific role (DCS vs ZD) and current request step.
+    # For example, if request.status is PENDING_DCS, only DCS_OFFICER should be able to approve/reject individuals.
+
+    db_person.status = models.RequestPersonStatus.APPROVED
+    db_person.rejection_reason = None # Clear any previous rejection reason
+    db.add(db_person)
+    db.commit()
+    db.refresh(db_person)
+    create_audit_log(db, actor_id=approver.id, entity="request_person", entity_id=db_person.id,
+                     action="APPROVE", data={"request_id": db_person.request_id, "new_status": "APPROVED"})
+    return db_person
+
+def reject_request_person(db: Session, request_person_id: int, reason: str, approver: models.User) -> models.RequestPerson:
+    db_person = get_request_person(db, request_person_id)
+    if not db_person:
+        raise ResourceNotFoundException("RequestPerson", request_person_id)
+
+    if not reason:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason is required.")
+
+    # Check main request status (similar to approve)
+    db_request = db.query(models.Request).filter(models.Request.id == db_person.request_id).first()
+    if not db_request:
+        raise ResourceNotFoundException("Request", db_person.request_id)
+
+    allowed_request_statuses_for_modification = [
+        schemas.RequestStatusEnum.PENDING_DCS.value,
+        schemas.RequestStatusEnum.APPROVED_DCS.value,
+        schemas.RequestStatusEnum.PENDING_ZD.value
+    ]
+    if db_request.status not in allowed_request_statuses_for_modification:
+        raise InvalidRequestStateException(
+            actual_status=db_request.status,
+            expected_status="a state allowing individual rejections (e.g., PENDING_DCS, PENDING_ZD)",
+            detail=f"Cannot reject individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual rejections at this stage."
+        )
+
+    # TODO: Further refine based on approver's specific role (DCS vs ZD) and current request step.
+
+    db_person.status = models.RequestPersonStatus.REJECTED
+    db_person.rejection_reason = reason
+    db.add(db_person)
+    db.commit()
+    db.refresh(db_person)
+    create_audit_log(db, actor_id=approver.id, entity="request_person", entity_id=db_person.id,
+                     action="REJECT", data={"request_id": db_person.request_id, "new_status": "REJECTED", "reason": reason})
+    return db_person
+
+
 # ------------- Request CRUD (Modified) -------------
 
-# Role constants for request creation logic (consider moving to rbac.py or constants.py later)
-# These should align with the 'code' field in the Role model.
-DIVISION_MANAGER_ROLE_CODE = "division_manager"
-DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-DEPARTMENT_HEAD_ROLE_CODE = "department_head"
-DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
-# ADMIN_ROLE_CODE = "admin" # Assuming admin can also create any type
-
-# DCS_OFFICER_ROLE_CODE and ZD_DEPUTY_HEAD_ROLE_CODE for notifications
-DCS_OFFICER_ROLE_CODE = "dcs_officer"
-ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head"
-
+# Role constants are now in constants.py and imported.
 
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
     # 1. Blacklist Check
     for person_schema in request_in.request_persons:
+        # Assuming RequestPersonCreate schema has firstname, lastname, doc_number
         if is_person_blacklisted(db, firstname=person_schema.firstname, lastname=person_schema.lastname, doc_number=person_schema.doc_number):
             # Log this attempt - actor_id is creator.id
-            create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0,
+            # Need to ensure person_schema has a 'full_name' attribute or construct it
+            full_name_for_log = f"{person_schema.firstname} {person_schema.lastname}"
+            create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0, # entity_id might be better as None or a specific code
                              action="CREATE_FAIL_BLACKLISTED",
-                             data={"message": f"Attempt to create request with blacklisted person: {person_schema.full_name}"})
-            raise BlacklistedPersonException(person_schema.firstname + " " + person_schema.lastname)
+                             data={"message": f"Attempt to create request with blacklisted person: {full_name_for_log}"})
+            raise BlacklistedPersonException(f"{person_schema.firstname} {person_schema.lastname}")
 
     # 2. Pass Type/Creation Rules
     if not creator.role or not creator.department:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role or department not defined.")
 
     creator_role_code = creator.role.code
-    creator_department_type = creator.department.type # This is DepartmentType enum instance
-    print(request_in.duration)
+    creator_department_type = creator.department.type
 
     can_create = False
-    # Determine if the creator's department is a Division
     is_division = creator_department_type == models.DepartmentType.DIVISION
-    # Define allowed roles based on department type
+
+    # Define allowed roles based on department type using constants
     if is_division:
-        allowed_roles = {DIVISION_MANAGER_ROLE_CODE, DEPUTY_DIVISION_MANAGER_ROLE_CODE, ADMIN_ROLE_CODE}
-    else:
-        allowed_roles = {DEPARTMENT_HEAD_ROLE_CODE, DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, ADMIN_ROLE_CODE}
+        allowed_roles = {
+            constants.DIVISION_MANAGER_ROLE_CODE,
+            constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE,
+            constants.ADMIN_ROLE_CODE
+        }
+    else: # Assuming other types like DEPARTMENT, UNIT fall here
+        allowed_roles = {
+            constants.DEPARTMENT_HEAD_ROLE_CODE,
+            constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE,
+            constants.ADMIN_ROLE_CODE,
+            constants.UNIT_HEAD_ROLE_CODE, # Adding unit head here, adjust if different logic for units
+            constants.DEPUTY_UNIT_HEAD_ROLE_CODE
+        }
+
     if request_in.duration == RequestDuration.LONG_TERM:
-        # Multi-day pass always goes to DCS
         request_in.status = schemas.RequestStatusEnum.PENDING_DCS.value
-        # Check if creator has permission for multi-day
         if creator_role_code in allowed_roles:
             can_create = True
     elif request_in.duration == RequestDuration.SHORT_TERM:
-        # Single-day pass: status depends on number of persons
         if len(request_in.request_persons) <= 3:
             request_in.status = schemas.RequestStatusEnum.PENDING_ZD.value
         else:
             request_in.status = schemas.RequestStatusEnum.PENDING_DCS.value
-        # Check if creator has permission for single-day
         if creator_role_code in allowed_roles:
             can_create = True
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Неправильно указан duration {request_in.duration}. Определите вариант краткосрочная заявка или долгосрочная."
+            detail=f"Invalid duration specified: {request_in.duration}. Must be SHORT_TERM or LONG_TERM."
         )
 
-    # Admin override - can create any type of pass
-    if creator_role_code == ADMIN_ROLE_CODE:
+    if creator_role_code == constants.ADMIN_ROLE_CODE: # Admin override
        can_create = True
 
     if not can_create:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail=f"User role '{creator.role.name}' and department type '{creator_department_type.value}'. У вас нет допуска.")
+        # More informative error message if possible
+        detail_msg = f"User role '{creator.role.name}' with department type '{creator_department_type.value}' is not authorized for this request type/duration."
+        if creator.department:
+            detail_msg = f"User role '{creator.role.name}' in department '{creator.department.name}' (type: '{creator_department_type.value}') is not authorized for this request type/duration."
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail_msg)
 
     # 3. Create Request and RequestPerson objects
     # Initial status is DRAFT (from schema default) or PENDING_DCS if submitted directly.
@@ -330,10 +405,10 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     # 5. Notification (Placeholder - actual user lookup for roles needed)
     # Example: notify DCS officers. This needs a way to find users by role.
-    # dcs_officers = db.query(models.User).join(models.Role).filter(models.Role.code == DCS_OFFICER_ROLE_CODE).all()
+    # dcs_officers = db.query(models.User).join(models.Role).filter(models.Role.code == constants.DCS_OFFICER_ROLE_CODE).all()
     # for officer in dcs_officers:
     #    create_notification(db, user_id=officer.id, message=f"New request {db_request.id} pending your review.", request_id=db_request.id)
-    # zd_deputy_heads = db.query(models.User).join(models.Role).filter(models.Role.code == ZD_DEPUTY_HEAD_ROLE_CODE).all()
+    # zd_deputy_heads = db.query(models.User).join(models.Role).filter(models.Role.code == constants.ZD_DEPUTY_HEAD_ROLE_CODE).all()
     # for zd_head in zd_deputy_heads:
     #    create_notification(db, user_id=zd_head.id, message=f"New request {db_request.id} created, will require ZD approval if DCS approves.", request_id=db_request.id)
 
@@ -688,6 +763,11 @@ def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.Us
 def delete_request(db: Session, db_request: models.Request) -> models.Request:
     db.query(models.Approval).filter(models.Approval.request_id == db_request.id).delete(synchronize_session=False)
     db.query(models.RequestPerson).filter(models.RequestPerson.request_id == db_request.id).delete(synchronize_session=False)
+    # Need to delete visit logs associated with request_persons of this request, or handle via DB cascade.
+    # For now, assuming cascade delete handles VisitLog or they are kept for history even if request is deleted.
+    # If VisitLog needs manual deletion here, it'd be more complex:
+    # for rp in db_request.request_persons:
+    #     db.query(models.VisitLog).filter(models.VisitLog.request_person_id == rp.id).delete(synchronize_session=False)
     db.delete(db_request)
     db.commit()
     return db_request
@@ -869,7 +949,7 @@ def create_visit_log(db: Session, visit_log: schemas.VisitLogCreate) -> models.V
     """
     db_visit_log = models.VisitLog(
         request_id=visit_log.request_id,
-        user_id=visit_log.user_id,
+        request_person_id=visit_log.request_person_id, # Changed from user_id
         check_out_time=visit_log.check_out_time  # This might be None if not provided
     )
     db.add(db_visit_log)
@@ -882,7 +962,7 @@ def get_visit_log(db: Session, visit_log_id: int) -> Optional[models.VisitLog]:
     Retrieves a specific visit log entry by its ID.
     """
     return db.query(models.VisitLog).options(
-        selectinload(models.VisitLog.user), # Eager load related user (visitor)
+        selectinload(models.VisitLog.request_person), # Eager load related request_person (visitor)
         selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.department)
     ).filter(models.VisitLog.id == visit_log_id).first()
 
@@ -891,9 +971,62 @@ def get_visit_logs_by_request_id(db: Session, request_id: int, skip: int = 0, li
     Retrieves all visit log entries for a given request ID.
     """
     return db.query(models.VisitLog).options(
-        selectinload(models.VisitLog.user), # Eager load related user (visitor)
+        selectinload(models.VisitLog.request_person), # Eager load related request_person (visitor)
         selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.department)
     ).filter(models.VisitLog.request_id == request_id).order_by(models.VisitLog.check_in_time.desc()).offset(skip).limit(limit).all()
+
+def get_visit_logs_by_request_person_id(db: Session, request_person_id: int, skip: int = 0, limit: int = 100) -> list[type[models.VisitLog]]:
+    """
+    Retrieves all visit log entries for a given request_person_id.
+    """
+    return db.query(models.VisitLog).options(
+        selectinload(models.VisitLog.request_person),
+        selectinload(models.VisitLog.request)
+    ).filter(models.VisitLog.request_person_id == request_person_id).order_by(models.VisitLog.check_in_time.desc()).offset(skip).limit(limit).all()
+
+
+def get_visit_logs_with_rbac(
+    db: Session,
+    current_user: models.User,
+    skip: int = 0,
+    limit: int = 100,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+) -> list[type[models.VisitLog]]:
+    """
+    Retrieves visit logs based on user's RBAC permissions, with filtering and pagination.
+    """
+    query = db.query(models.VisitLog)
+
+    # Join necessary tables for filtering and eager loading
+    # We need Request for its creator, and Creator for their department.
+    query = query.join(models.VisitLog.request).join(models.Request.creator) # Joining User table (aliased as creator)
+
+    # Apply RBAC
+    if not rbac.can_view_all_visit_logs(current_user):
+        allowed_dept_ids = rbac.get_allowed_creator_department_ids_for_visit_logs(db, current_user)
+        if not allowed_dept_ids:
+            return []
+        # Filter based on the department ID of the creator of the request associated with the visit log
+        query = query.filter(models.User.department_id.in_(allowed_dept_ids))
+
+    # Apply date filters on VisitLog.check_in_time
+    if start_date:
+        query = query.filter(models.VisitLog.check_in_time >= start_date)
+    if end_date:
+        # To include the whole end_date, filter up to the start of the next day
+        from datetime import timedelta
+        query = query.filter(models.VisitLog.check_in_time < (end_date + timedelta(days=1)))
+
+    # Eager loading for response model population
+    query = query.options(
+        selectinload(models.VisitLog.request_person),
+        selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.department),
+        selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.role) # Added role for creator
+    )
+
+    return query.order_by(models.VisitLog.check_in_time.desc()).offset(skip).limit(limit).all()
+
 
 def update_visit_log(db: Session, visit_log_id: int, visit_log_update: schemas.VisitLogUpdate) -> Optional[models.VisitLog]:
     """
