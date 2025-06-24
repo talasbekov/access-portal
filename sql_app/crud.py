@@ -409,7 +409,7 @@ def get_requests(
     user: models.User,
     skip: int = 0,
     limit: int = 100,
-    status: Optional[str] = None,
+    statuses: Optional[List[str]] = None,       # <- здесь
     checkpoints: Optional[List[int]] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
@@ -422,51 +422,46 @@ def get_requests(
         selectinload(models.Request.request_persons),
     )
 
-    # 1) Вычисляем базовые фильтры видимости
+    # 1) Базовые фильтры видимости…
     vf = rbac.get_request_visibility_filters_for_user(db, user)
-
     if not vf.get("is_unrestricted", False):
         conds = []
 
-        # собственные заявки
-        if vf.get("creator_id") is not None:
+        # 1) Always let a creator see their own requests
+        if "creator_id" in vf:
             conds.append(models.Request.creator_id == vf["creator_id"])
 
-        # по списку департаментов
-        if vf.get("department_ids"):
+        # 2) Department Heads: requests whose creator’s department is in department_ids
+        if "department_ids" in vf and vf["department_ids"]:
             conds.append(
                 models.Request.creator.has(
                     models.User.department_id.in_(vf["department_ids"])
                 )
             )
 
-        # точный департамент (division manager)
-        if vf.get("exact_department_id") is not None:
+        # 3) Division Managers: exact match on department
+        if "exact_department_id" in vf:
             conds.append(
                 models.Request.creator.has(
                     models.User.department_id == vf["exact_department_id"]
                 )
             )
 
-        # оператор КПП
-        if vf.get("checkpoint_id") is not None:
+        # 4) Checkpoint Operators: requests at their checkpoint with allowed statuses
+        if "checkpoint_id" in vf:
             conds.append(
-                models.Request.checkpoints.any(
-                    models.Checkpoint.id == vf["checkpoint_id"]
-                )
+                models.Request.checkpoints.any(models.Checkpoint.id == vf["checkpoint_id"])
+                & models.Request.status.in_(vf.get("target_statuses", []))
             )
-            # и только нужные статусы для оператора
-            if vf.get("target_statuses"):
-                conds.append(models.Request.status.in_(vf["target_statuses"]))
 
         if not conds:
-            return []  # пользователю запрещено видеть любые заявки
-
+            return []
         query = query.filter(or_(*conds))
 
+
     # 2) Явные фильтры из запроса
-    if status:
-        query = query.filter(models.Request.status == status)
+    if statuses:
+        query = query.filter(models.Request.status.in_(statuses))
 
     if checkpoints:
         query = query.filter(

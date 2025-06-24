@@ -331,7 +331,7 @@ class BlackListBase(BaseModel):
     status: str = 'ACTIVE'
 
 class BlackListCreate(BlackListBase):
-    added_by: int # Usually current user
+    pass
 
 class BlackListUpdate(BlackListBase):
     firstname: Optional[str] = None

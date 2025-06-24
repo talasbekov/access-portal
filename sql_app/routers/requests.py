@@ -1,19 +1,13 @@
-from fastapi import Depends, HTTPException, APIRouter, status # Added status
+from fastapi import Depends, HTTPException, APIRouter, status, Query # Added status
 from sqlalchemy.orm import Session
-from datetime import datetime, date, timedelta # Added datetime, date, timedelta
 from typing import List, Optional
-# Removed: from pydantic import BaseModel
 import os
 from fastapi.security import OAuth2PasswordBearer # Added
 from jose import JWTError, jwt # Added
-
-# Use the minimal get_db from dependencies
 from ..dependencies import get_db
-# Removed: from ..dependencies import oauth2_scheme
-from .. import crud, models, schemas, rbac # Added rbac import
-from ..auth import decode_token as auth_decode_token # For JWT decoding
+from .. import crud, models, schemas, rbac
+from ..auth import decode_token as auth_decode_token
 
-# Load .env for role codes or other configs if they were to be moved from here
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -80,12 +74,26 @@ EMPLOYEE_ROLE_CODE = "employee" # Default or generic user
 UNIT_HEAD_ROLE_CODE = "unit_head" # Assuming Unit is a type of department
 
 
+def parse_status_filter(
+    raw: Optional[str] = Query(None, alias="status_filter")
+) -> Optional[List[schemas.RequestStatusEnum]]:
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    try:
+        return [schemas.RequestStatusEnum(p) for p in parts]
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status value: {e}"
+        )
+
 # Get All Requests (with RBAC)
 @router.get("/", response_model=List[schemas.Request])
 async def read_all_requests( # Changed to async
     skip: int = 0,
     limit: int = 100,
-    status_filter: Optional[schemas.RequestStatusEnum] = None, # Renamed from 'status' to avoid conflict with status module
+    statuses: Optional[List[schemas.RequestStatusEnum]] = Depends(parse_status_filter),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user_for_req_router)
 ):
@@ -95,21 +103,15 @@ async def read_all_requests( # Changed to async
 
     # The old complex RBAC logic here is now moved into crud.get_requests
     # and rbac.get_request_visibility_filters_for_user.
-
     # Pass all relevant filters to crud.get_requests
     # Note: The crud.get_requests function was updated to accept these named filters.
     # Ensure that the names here match the parameter names in crud.get_requests.
     requests = crud.get_requests(
         db,
-        user=current_user, # Pass the current_user for RBAC
+        user=current_user,
         skip=skip,
         limit=limit,
-        status=status_filter.value if status_filter else None, # Pass the string value of the enum
-        # Add other filters as they are defined in crud.get_requests signature
-        # checkpoint_id=checkpoint_id_filter, # This was from old logic, ensure crud.get_requests handles it
-        # date_from=...,
-        # date_to=...,
-        # visitor_name=...
+        statuses=[s.value for s in statuses] if statuses else None,
     )
     return requests
 

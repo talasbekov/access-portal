@@ -57,7 +57,16 @@ async def get_current_active_user_for_bl_router(current_user: models.User = Depe
 
 # Specific role check for Security Officer (can be expanded in Step 5 RBAC)
 async def get_security_officer_user_local(current_user: models.User = Depends(get_current_active_user_for_bl_router)) -> models.User:
-    if not current_user.role or current_user.role.code != "security_officer": # Example role code
+    allowed_roles = ["security_officer", "dcs_officer", "zd_deputy_head"]
+    if not current_user.role or current_user.role.code not in allowed_roles: # Example role code
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have Security Officer privileges")
+    return current_user
+# --- End Real Authentication Logic ---
+
+# Specific role check for Security Officer (can be expanded in Step 5 RBAC)
+async def get_security_officer_read_blacklist(current_user: models.User = Depends(get_current_active_user_for_bl_router)) -> models.User:
+    allowed_roles = ["security_officer", "dcs_officer", "zd_deputy_head", "admin", "department_head", "deputy_department_head", "division_manager", "deputy_division_manager", "KPP_", "employee"]
+    if not current_user.role or current_user.role.code not in allowed_roles: # Example role code
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have Security Officer privileges")
     return current_user
 # --- End Real Authentication Logic ---
@@ -68,7 +77,24 @@ async def read_blacklist_entries(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_user_local)
+    current_user: models.User = Depends(get_security_officer_read_blacklist)
+):
+    """
+    Retrieve all blacklist entries.
+    - Requires authentication (Security Officer).
+    """
+    # The crud.get_blacklist_entries can take active_only, skip, limit.
+    # For now, returning all, as per original logic in this router.
+    entries = crud.get_blacklist_entries(db, skip=skip, limit=limit, active_only=True)
+    return entries
+
+
+@router.get("/history", response_model=List[schemas.BlackList])
+async def read_all_blacklist_entries(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_security_officer_read_blacklist)
 ):
     """
     Retrieve all blacklist entries.
