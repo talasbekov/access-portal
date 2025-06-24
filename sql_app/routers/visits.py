@@ -147,15 +147,37 @@ async def record_visitor_entry(
         )
 
     # 7. Create VisitLog
-    # The VisitLogCreate schema expects request_id and request_person_id.
-    # check_in_time is server_default.
-    # check_out_time can be None.
-    new_visit_log_data = schemas.VisitLogCreate(
-        request_id=visit_log_in.request_id,
-        request_person_id=visit_log_in.request_person_id
-        # check_out_time is not set on entry
-    )
-    created_log = crud.create_visit_log(db=db, visit_log=new_visit_log_data)
+    # The VisitLogCreate schema expects request_id, request_person_id, and checkpoint_id.
+
+    kpp_checkpoint_id = rbac.get_kpp_checkpoint_id_from_user(current_user)
+    if kpp_checkpoint_id is None:
+        # This log helps identify if role codes are not set up like "KPP-1", "KPP-2", etc.
+        print(f"[ERROR] KPP User {current_user.username} (ID: {current_user.id}) could not determine checkpoint ID from role: {current_user.role.code if current_user.role else 'NO_ROLE'}")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="KPP user role does not specify a valid checkpoint number (e.g., KPP-1).")
+
+    # Verify this checkpoint_id (derived from KPP user's role) exists in the DB
+    db_checkpoint = crud.get_checkpoint(db, checkpoint_id=kpp_checkpoint_id)
+    if not db_checkpoint:
+        print(f"[ERROR] KPP User {current_user.username} (ID: {current_user.id}) - Checkpoint ID {kpp_checkpoint_id} derived from role not found in DB.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"KPP's assigned checkpoint (ID: {kpp_checkpoint_id}) is invalid or not found.")
+
+    # Ensure the request (db_request was fetched earlier) allows entry through this KPP user's checkpoint
+    if not any(cp.id == kpp_checkpoint_id for cp in db_request.checkpoints):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Request ID {db_request.id} does not permit entry through checkpoint {db_checkpoint.name} (KPP user's assigned checkpoint)."
+        )
+
+    # Validate that the checkpoint_id in the payload matches the KPP user's derived checkpoint_id
+    if visit_log_in.checkpoint_id != kpp_checkpoint_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Provided checkpoint_id {visit_log_in.checkpoint_id} in payload does not match KPP user's assigned checkpoint {kpp_checkpoint_id}."
+        )
+
+    # All checks passed, create the visit log using the validated payload.
+    # visit_log_in already contains request_id, request_person_id, and the (now validated) checkpoint_id.
+    created_log = crud.create_visit_log(db=db, visit_log=visit_log_in)
 
     # (Optional) Update RequestPerson.is_entered status
     # db_request_person.is_entered = True

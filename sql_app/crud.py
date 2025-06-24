@@ -242,8 +242,20 @@ def approve_request_person(db: Session, request_person_id: int, approver: models
             detail=f"Cannot approve individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual approvals at this stage."
         )
 
-    # TODO: Further refine based on approver's specific role (DCS vs ZD) and current request step.
-    # For example, if request.status is PENDING_DCS, only DCS_OFFICER should be able to approve/reject individuals.
+    # TODO: Further refine based on approver's specific role (USB vs AS) and current request step.
+    if rbac.is_usb_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+        raise InvalidRequestStateException(
+            actual_status=db_request.status,
+            expected_status=schemas.RequestStatusEnum.PENDING_USB.value,
+            detail=f"USB officer can only approve individuals if main request is PENDING_USB. Current status: {db_request.status}"
+        )
+    elif rbac.is_as_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
+        raise InvalidRequestStateException(
+            actual_status=db_request.status,
+            expected_status=schemas.RequestStatusEnum.PENDING_AS.value,
+            detail=f"AS officer can only approve individuals if main request is PENDING_AS. Current status: {db_request.status}"
+        )
+    # If user is neither USB nor AS but somehow got here (e.g. Admin via get_security_officer_user), this check might need to be more encompassing or rely on a general "is_approver_role"
 
     db_person.status = models.RequestPersonStatus.APPROVED
     db_person.rejection_reason = None # Clear any previous rejection reason
@@ -279,7 +291,20 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
             detail=f"Cannot reject individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual rejections at this stage."
         )
 
-    # TODO: Further refine based on approver's specific role (DCS vs ZD) and current request step.
+    # TODO: Further refine based on approver's specific role (USB vs AS) and current request step.
+    if rbac.is_usb_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+        raise InvalidRequestStateException(
+            actual_status=db_request.status,
+            expected_status=schemas.RequestStatusEnum.PENDING_USB.value,
+            detail=f"USB officer can only reject individuals if main request is PENDING_USB. Current status: {db_request.status}"
+        )
+    elif rbac.is_as_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
+        raise InvalidRequestStateException(
+            actual_status=db_request.status,
+            expected_status=schemas.RequestStatusEnum.PENDING_AS.value,
+            detail=f"AS officer can only reject individuals if main request is PENDING_AS. Current status: {db_request.status}"
+        )
+    # Add Admin override or more general approver role check if needed
 
     db_person.status = models.RequestPersonStatus.REJECTED
     db_person.rejection_reason = reason
@@ -297,75 +322,48 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
 
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
     # 1. Blacklist Check
-    for person_schema in request_in.request_persons:
-        # Assuming RequestPersonCreate schema has firstname, lastname, doc_number
-        if is_person_blacklisted(db, firstname=person_schema.firstname, lastname=person_schema.lastname, doc_number=person_schema.doc_number):
-            # Log this attempt - actor_id is creator.id
-            # Need to ensure person_schema has a 'full_name' attribute or construct it
+    for person_schema in request_in.request_persons: # person_schema is schemas.RequestPersonCreate
+        if is_person_blacklisted(
+            db,
+            firstname=person_schema.firstname,
+            lastname=person_schema.lastname,
+            iin=person_schema.iin, # schemas.RequestPersonCreate now has iin
+            doc_number=person_schema.doc_number, # and doc_number
+            birth_date=person_schema.birth_date # and birth_date
+            ):
             full_name_for_log = f"{person_schema.firstname} {person_schema.lastname}"
             create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0, # entity_id might be better as None or a specific code
                              action="CREATE_FAIL_BLACKLISTED",
                              data={"message": f"Attempt to create request with blacklisted person: {full_name_for_log}"})
             raise BlacklistedPersonException(f"{person_schema.firstname} {person_schema.lastname}")
 
-    # 2. Pass Type/Creation Rules
+    # 2. Creator Permission Checks
     if not creator.role or not creator.department:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role or department not defined.")
 
-    creator_role_code = creator.role.code
-    creator_department_type = creator.department.type
+    is_admin = rbac.is_admin(creator)
+    is_nach_departamenta = rbac.is_nach_departamenta(creator)
+    is_nach_upravleniya = rbac.is_nach_upravleniya(creator)
 
-    can_create = False
-    is_division = creator_department_type == models.DepartmentType.DIVISION
-
-    # Define allowed roles based on department type using constants
-    if is_division:
-        allowed_roles = {
-            constants.DIVISION_MANAGER_ROLE_CODE,
-            constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE,
-            constants.ADMIN_ROLE_CODE
-        }
-    else: # Assuming other types like DEPARTMENT, UNIT fall here
-        allowed_roles = {
-            constants.DEPARTMENT_HEAD_ROLE_CODE,
-            constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE,
-            constants.ADMIN_ROLE_CODE,
-            constants.UNIT_HEAD_ROLE_CODE, # Adding unit head here, adjust if different logic for units
-            constants.DEPUTY_UNIT_HEAD_ROLE_CODE
-        }
-
+    can_create_request_type = False
     if request_in.duration == RequestDuration.LONG_TERM:
-        request_in.status = schemas.RequestStatusEnum.PENDING_DCS.value
-        if creator_role_code in allowed_roles:
-            can_create = True
-    elif request_in.duration == RequestDuration.SHORT_TERM:
-        if len(request_in.request_persons) <= 3:
-            request_in.status = schemas.RequestStatusEnum.PENDING_ZD.value
+        if is_nach_departamenta or is_admin:
+            can_create_request_type = True
         else:
-            request_in.status = schemas.RequestStatusEnum.PENDING_DCS.value
-        if creator_role_code in allowed_roles:
-            can_create = True
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Department Heads or Admin can create long-term requests.")
+    elif request_in.duration == RequestDuration.SHORT_TERM:
+        # Assuming Nach Departamenta can also create short-term as they are higher/equivalent to Nach Upravleniya in some structures
+        if is_nach_upravleniya or is_nach_departamenta or is_admin:
+            can_create_request_type = True
+        else:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Unit/Division/Department Heads or Admin can create short-term requests.")
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid duration specified: {request_in.duration}. Must be SHORT_TERM or LONG_TERM."
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request duration specified.")
 
-    if creator_role_code == constants.ADMIN_ROLE_CODE: # Admin override
-       can_create = True
-
-    if not can_create:
-        # More informative error message if possible
-        detail_msg = f"User role '{creator.role.name}' with department type '{creator_department_type.value}' is not authorized for this request type/duration."
-        if creator.department:
-            detail_msg = f"User role '{creator.role.name}' in department '{creator.department.name}' (type: '{creator_department_type.value}') is not authorized for this request type/duration."
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail_msg)
+    # The status will be DRAFT by default from schemas.RequestCreate.
+    # Actual routing to PENDING_USB/AS will happen in submit_request.
 
     # 3. Create Request and RequestPerson objects
-    # Initial status is DRAFT (from schema default) or PENDING_DCS if submitted directly.
-    # This CRUD assumes RequestCreate implies a DRAFT unless status is overridden.
-    # The router endpoint should handle if it's a direct submit changing status.
-    # For now, using status from request_in, which defaults to DRAFT.
 
     # 1. Собираем объекты-модели Checkpoint по списку id
     if not request_in.checkpoint_ids:
@@ -621,12 +619,18 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
         raise InvalidRequestStateException(db_request.status, "DRAFT")
 
-    print(len(db_request.request_persons))
-    len_person_data = len(db_request.request_persons)
-    if len_person_data <= 3:
-        db_request.status = schemas.RequestStatusEnum.PENDING_ZD.value
-    else:
-        db_request.status = schemas.RequestStatusEnum.PENDING_DCS.value
+    # Determine initial status based on new rules
+    contains_foreign_citizen = any(
+        p.nationality == models.NationalityType.FOREIGN for p in db_request.request_persons
+    )
+
+    if db_request.duration == RequestDuration.LONG_TERM or \
+       len(db_request.request_persons) > 3 or \
+       contains_foreign_citizen:
+        db_request.status = schemas.RequestStatusEnum.PENDING_USB.value
+    else: # Short-term, <=3 persons, all KZ citizens (implicitly, as foreign check is done)
+        db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
+
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
@@ -639,9 +643,137 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
     # Similar for ZD if needed at this stage.
     return db_request
 
+# --- USB Workflow Functions ---
+def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> models.Request:
+    db_request = get_request(db, request_id=request_id, user=usb_user) # RBAC check for visibility
+    if not db_request:
+        raise ResourceNotFoundException("Request", request_id)
+
+    if db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_USB.value)
+
+    # Update main request status
+    db_request.status = schemas.RequestStatusEnum.APPROVED_USB.value
+    # Immediately move to next stage if USB approves (unless there's an intermediate USB_APPROVED state needed for something else)
+    # Based on "заявки которые одобрила роль УСБ попадают к юзеру с ролью АС"
+    db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
+
+    # Cascade approval to all persons
+    for person in db_request.request_persons:
+        person.status = models.RequestPersonStatus.APPROVED
+        person.rejection_reason = None
+        db.add(person)
+
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=usb_user.id, entity="request", entity_id=db_request.id,
+                     action="USB_APPROVE_ALL", data={"new_status": db_request.status})
+    # TODO: Notify AS users that a request is pending their approval.
+    return db_request
+
+def decline_request_usb(db: Session, request_id: int, usb_user: models.User, reason: str) -> models.Request:
+    db_request = get_request(db, request_id=request_id, user=usb_user)
+    if not db_request:
+        raise ResourceNotFoundException("Request", request_id)
+
+    if db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_USB.value)
+
+    if not reason or len(reason.strip()) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason is required for declining the request.")
+
+    db_request.status = schemas.RequestStatusEnum.DECLINED_USB.value
+
+    # Cascade rejection to all persons
+    cascade_rejection_reason = f"Main request declined by USB: {reason}"
+    for person in db_request.request_persons:
+        person.status = models.RequestPersonStatus.REJECTED
+        person.rejection_reason = cascade_rejection_reason
+        db.add(person)
+
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=usb_user.id, entity="request", entity_id=db_request.id,
+                     action="USB_DECLINE_ALL", data={"new_status": db_request.status, "reason": reason})
+    # TODO: Notify creator about rejection.
+    return db_request
+
+
+# Old approval logic - will be replaced by USB/AS specific functions
+# def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
+#     from fastapi import status as fastapi_status
+#     db_request = get_request(db, request_id=request_id, user=approver)
+# ... (rest of old function) ...
+
+# def decline_request_step(...)
+# ... (rest of old function) ...
+
+
+# --- AS Workflow Functions ---
+def approve_request_as(db: Session, request_id: int, as_user: models.User) -> models.Request:
+    db_request = get_request(db, request_id=request_id, user=as_user) # RBAC check for visibility
+    if not db_request:
+        raise ResourceNotFoundException("Request", request_id)
+
+    # AS can approve requests that are PENDING_AS (either directly routed or after USB approval)
+    if db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
+        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_AS.value)
+
+    db_request.status = schemas.RequestStatusEnum.APPROVED_AS.value # This is the final approval state before KPP
+    # Consider if APPROVED_AS should automatically become ISSUED, or if ISSUED is a separate step.
+    # For now, APPROVED_AS is the trigger for KPP visibility.
+
+    # Cascade approval to persons who are not already explicitly REJECTED.
+    for person in db_request.request_persons:
+        if person.status != models.RequestPersonStatus.REJECTED:
+            person.status = models.RequestPersonStatus.APPROVED
+            person.rejection_reason = None # Clear reason if it was pending and somehow had one
+            db.add(person)
+
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=as_user.id, entity="request", entity_id=db_request.id,
+                     action="AS_APPROVE_ALL", data={"new_status": db_request.status})
+    # TODO: Notify creator and KPP operators.
+    return db_request
+
+def decline_request_as(db: Session, request_id: int, as_user: models.User, reason: str) -> models.Request:
+    db_request = get_request(db, request_id=request_id, user=as_user)
+    if not db_request:
+        raise ResourceNotFoundException("Request", request_id)
+
+    if db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
+        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_AS.value)
+
+    if not reason or len(reason.strip()) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason is required for declining the request.")
+
+    db_request.status = schemas.RequestStatusEnum.DECLINED_AS.value
+
+    cascade_rejection_reason = f"Main request declined by AS: {reason}"
+    for person in db_request.request_persons:
+        # Only reject persons who are not already rejected to avoid overwriting specific previous rejection reasons by USB.
+        # Or, always overwrite if AS decline is final. For now, let's assume AS decline is final for all non-approved.
+        if person.status != models.RequestPersonStatus.REJECTED:
+             person.status = models.RequestPersonStatus.REJECTED
+             person.rejection_reason = cascade_rejection_reason # Overwrites individual USB reasons if any
+        # If a person was individually approved by USB, and AS rejects the whole request, that person becomes rejected.
+        db.add(person)
+
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    create_audit_log(db, actor_id=as_user.id, entity="request", entity_id=db_request.id,
+                     action="AS_DECLINE_ALL", data={"new_status": db_request.status, "reason": reason})
+    # TODO: Notify creator about rejection.
+    return db_request
+
 
 def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
-    from fastapi import status as fastapi_status
+    from fastapi import status as fastapi_status # Keep for now if other parts use it
     db_request = get_request(db, request_id=request_id, user=approver)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
@@ -815,8 +947,54 @@ def create_audit_log(db: Session, actor_id: Optional[int], entity: str, entity_i
     db.refresh(db_audit_log)
     return db_audit_log
 
-def get_audit_logs(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.AuditLog]]:
-    return db.query(models.AuditLog).options(selectinload(models.AuditLog.actor)).order_by(models.AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
+def get_audit_logs(db: Session, skip: int = 0, limit: int = 100) -> list[type[models.AuditLog]]: # Basic getter
+    return db.query(models.AuditLog).options(
+        selectinload(models.AuditLog.actor).selectinload(models.User.department), # Load actor's department
+        selectinload(models.AuditLog.actor).selectinload(models.User.role)
+    ).order_by(models.AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
+
+def get_audit_logs_filtered(
+    db: Session,
+    current_user: models.User, # For RBAC
+    skip: int = 0,
+    limit: int = 100,
+    actor_department_id: Optional[int] = None, # Optional filter by specific department ID
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+) -> list[type[models.AuditLog]]:
+
+    query = db.query(models.AuditLog).join(models.AuditLog.actor, isouter=True).join(models.User.department, isouter=True)
+
+    if not rbac.can_view_all_audit_logs(current_user):
+        allowed_actor_dept_ids = rbac.get_allowed_actor_department_ids_for_audit_logs(db, current_user)
+        if not allowed_actor_dept_ids: # Empty list means cannot see any by this rule
+            return []
+
+        # If manager is trying to filter by a specific department, it must be within their scope
+        if actor_department_id and actor_department_id not in allowed_actor_dept_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view audit logs for the specified department.")
+
+        # Apply manager's scope
+        query = query.filter(models.User.department_id.in_(allowed_actor_dept_ids))
+
+    # If admin/usb/as provided a specific department_id to filter by
+    if actor_department_id and rbac.can_view_all_audit_logs(current_user):
+        query = query.filter(models.User.department_id == actor_department_id)
+
+    # Date filters
+    if start_date:
+        query = query.filter(models.AuditLog.timestamp >= start_date)
+    if end_date:
+        from datetime import timedelta
+        query = query.filter(models.AuditLog.timestamp < (end_date + timedelta(days=1)))
+
+    query = query.options(
+        selectinload(models.AuditLog.actor).selectinload(models.User.department),
+        selectinload(models.AuditLog.actor).selectinload(models.User.role)
+    ).order_by(models.AuditLog.timestamp.desc())
+
+    return query.offset(skip).limit(limit).all()
+
 
 # ------------- Blacklist CRUD (Refactored) -------------
 def create_blacklist_entry(db: Session, entry_in: schemas.BlackListCreate, adder_id: int) -> models.BlackList:
@@ -848,31 +1026,53 @@ def get_blacklist_entries(db: Session, skip: int = 0, limit: int = 100, active_o
     return query.order_by(models.BlackList.added_at.desc()).offset(skip).limit(limit).all()
 
 def update_blacklist_entry(db: Session, db_entry: models.BlackList, entry_in: schemas.BlackListUpdate, actor_id: Optional[int]) -> models.BlackList:
-    update_data = entry_in.model_dump(exclude_unset=True)
+    update_data = entry_in.model_dump(exclude_unset=True) # For BlackListUpdate which is BaseModel
     changed_fields = {}
     for key, value in update_data.items():
-        if getattr(db_entry, key) != value:
+        if hasattr(db_entry, key) and getattr(db_entry, key) != value:
             changed_fields[key] = {"old": getattr(db_entry, key), "new": value}
-        setattr(db_entry, key, value)
+            setattr(db_entry, key, value)
 
-    if changed_fields: # Only commit and audit if there are actual changes
+    if changed_fields:
         db.add(db_entry)
         db.commit()
         db.refresh(db_entry)
         create_audit_log(db, actor_id=actor_id, entity="blacklist", entity_id=db_entry.id, action="UPDATE", data=changed_fields)
     return db_entry
 
-def is_person_blacklisted(db: Session, firstname: str, lastname: str, doc_number: str) -> bool:
+def is_person_blacklisted(
+    db: Session,
+    firstname: str,
+    lastname: str,
+    iin: Optional[str] = None,
+    doc_number: Optional[str] = None,
+    birth_date: Optional[date] = None # Added birth_date for more precise matching
+) -> bool:
     query = db.query(models.BlackList).filter(
         models.BlackList.status == 'ACTIVE',
-        models.BlackList.firstname == firstname,
-         # Consider case-insensitive search here
+        # Case-insensitive matching for names might be good (e.g., using .ilike() or func.lower())
+        models.BlackList.firstname.ilike(firstname),
+        models.BlackList.lastname.ilike(lastname)
     )
-    if doc_number:
-        query = query.filter(models.BlackList.doc_number == doc_number)
-    # Not using lastname in the check for now as per original logic, but can be added.
-    if lastname:
-        query = query.filter(models.BlackList.lastname == lastname)
+    if birth_date: # Matching by birth_date significantly reduces false positives
+        query = query.filter(models.BlackList.birth_date == birth_date)
+
+    # Check IIN or doc_number
+    conditions = []
+    if iin:
+        conditions.append(models.BlackList.iin == iin)
+    if doc_number: # This doc_number is for foreign nationals as per new model structure
+        conditions.append(models.BlackList.doc_number == doc_number)
+
+    if not conditions: # If neither IIN nor doc_number is provided for check, rely on name+birthdate only.
+                       # This might be too broad depending on policy.
+                       # For now, if no identifier, we assume it's not a strong enough check to block.
+                       # Or, one of them MUST be present for a meaningful check.
+                       # Based on "Сверка по ФИО, номеру документа, ИИН", at least one ID should be there.
+        return False # Or raise an error if identifier is mandatory for blacklist check call.
+
+    query = query.filter(or_(*conditions))
+
     return query.first() is not None
 
 def remove_blacklist_entry(db: Session, entry_id: int, remover_id: int) -> Optional[models.BlackList]:
@@ -949,8 +1149,9 @@ def create_visit_log(db: Session, visit_log: schemas.VisitLogCreate) -> models.V
     """
     db_visit_log = models.VisitLog(
         request_id=visit_log.request_id,
-        request_person_id=visit_log.request_person_id, # Changed from user_id
-        check_out_time=visit_log.check_out_time  # This might be None if not provided
+        request_person_id=visit_log.request_person_id,
+        checkpoint_id=visit_log.checkpoint_id, # Added checkpoint_id
+        check_out_time=visit_log.check_out_time
     )
     db.add(db_visit_log)
     db.commit()
@@ -1003,11 +1204,21 @@ def get_visit_logs_with_rbac(
     query = query.join(models.VisitLog.request).join(models.Request.creator) # Joining User table (aliased as creator)
 
     # Apply RBAC
-    if not rbac.can_view_all_visit_logs(current_user):
+    if rbac.can_view_all_visit_logs(current_user): # USB, AS, Admin
+        # No additional department/checkpoint filters needed for these roles if they see everything
+        pass
+    elif current_user.role and current_user.role.code.startswith(constants.KPP_ROLE_PREFIX):
+        kpp_checkpoint_id = rbac.get_kpp_checkpoint_id_from_user(current_user)
+        if kpp_checkpoint_id is not None:
+            query = query.filter(models.VisitLog.checkpoint_id == kpp_checkpoint_id)
+        else: # Invalid KPP role or no checkpoint ID derivable, return no logs
+            return []
+    else: # Must be a manager (Nach. Departamenta, Nach. Upravleniya)
         allowed_dept_ids = rbac.get_allowed_creator_department_ids_for_visit_logs(db, current_user)
         if not allowed_dept_ids:
             return []
         # Filter based on the department ID of the creator of the request associated with the visit log
+        # The join query.join(models.VisitLog.request).join(models.Request.creator) makes models.User (creator) available.
         query = query.filter(models.User.department_id.in_(allowed_dept_ids))
 
     # Apply date filters on VisitLog.check_in_time

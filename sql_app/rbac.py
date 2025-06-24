@@ -16,6 +16,33 @@ def is_dcs_officer(user: models.User) -> bool:
 def is_zd_deputy_head(user: models.User) -> bool:
     return user.role and user.role.code == constants.ZD_DEPUTY_HEAD_ROLE_CODE
 
+def is_usb_officer(user: models.User) -> bool: # Renamed from is_usb for consistency
+    return user.role and user.role.code == constants.USB_ROLE_CODE
+
+def is_as_officer(user: models.User) -> bool: # Renamed from is_as for consistency
+    return user.role and user.role.code == constants.AS_ROLE_CODE
+
+def is_nach_departamenta(user: models.User) -> bool:
+    return user.role and user.role.code == constants.DEPARTMENT_HEAD_ROLE_CODE and \
+           user.department and user.department.type == models.DepartmentType.DEPARTMENT
+
+def is_nach_upravleniya(user: models.User) -> bool:
+    if not user.role or not user.department:
+        return False
+    is_head_of_division = (user.role.code == constants.DIVISION_MANAGER_ROLE_CODE and
+                           user.department.type == models.DepartmentType.DIVISION)
+    is_head_of_unit = (user.role.code == constants.UNIT_HEAD_ROLE_CODE and
+                       user.department.type == models.DepartmentType.UNIT)
+    return is_head_of_division or is_head_of_unit
+
+def get_kpp_checkpoint_id_from_user(user: models.User) -> Optional[int]:
+    """Extracts checkpoint ID from KPP user's role code (e.g., KPP-1 -> 1)."""
+    if user.role and user.role.code and user.role.code.startswith(constants.KPP_ROLE_PREFIX):
+        try:
+            return int(user.role.code[len(constants.KPP_ROLE_PREFIX):])
+        except ValueError:
+            return None # Role code suffix is not a valid integer
+    return None # Not a KPP role or role code is malformed
 
 # --- RBAC Functions for Visit Log Viewing ---
 
@@ -27,9 +54,9 @@ def can_view_all_visit_logs(user: models.User) -> bool:
     if not user.role:
         return False
     return user.role.code in [
-        constants.DCS_OFFICER_ROLE_CODE,
-        constants.ADMIN_ROLE_CODE,
-        constants.ZD_DEPUTY_HEAD_ROLE_CODE
+        constants.USB_ROLE_CODE, # Updated from DCS
+        constants.AS_ROLE_CODE,  # Updated from ZD
+        constants.ADMIN_ROLE_CODE
     ]
 
 def get_allowed_creator_department_ids_for_visit_logs(db: Session, user: models.User) -> Optional[List[int]]:
@@ -194,41 +221,30 @@ def can_user_view_request(
     if not user or not request:
         return False
 
-    # 1. Админы, ДКС и зам.нач. ЗД видят всё
-    if is_admin(user) or is_dcs_officer(user) or is_zd_deputy_head(user):
+    # 1. Admin, USB, AS see all requests
+    if is_admin(user) or is_usb_officer(user) or is_as_officer(user):
         return True
 
-    # 2. Создатель видит свой запрос
+    # 2. Creator sees their own request
     if is_creator(user, request):
         return True
 
-    # 3. Руководители по департаменту/подразделению
+    # 3. Managers (Nach. Departamenta, Nach. Upravleniya) see requests from their hierarchy
     if request.creator and can_view_request_based_on_role_and_department(db, user, request.creator):
         return True
 
-    # 4. Операторы КПП видят «свои» заявки со статусами APPROVED_ZD и ISSUED
+    # 4. KPP users see requests for their checkpoint if status is APPROVED_AS
     role = user.role
-    if role and role.code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):
-        # Из кода роли вычленяем ID КПП
-        # Например, код "checkpoint_operator_cp5" -> "5"
-        cp_id_str = role.code[len(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):]
-        try:
-            cp_id = int(cp_id_str)
-        except ValueError:
-            return False # Invalid role code format
+    if role and role.code.startswith(constants.KPP_ROLE_PREFIX):
+        kpp_checkpoint_id = get_kpp_checkpoint_id_from_user(user)
+        if kpp_checkpoint_id is not None:
+            # Check if the request is associated with the KPP user's checkpoint
+            has_checkpoint_access = any(cp.id == kpp_checkpoint_id for cp in request.checkpoints)
 
-        # Проверяем, что в списке request.checkpoints есть нужный КПП
-        has_checkpoint = any(cp.id == cp_id for cp in request.checkpoints)
+            if has_checkpoint_access and request.status == schemas.RequestStatusEnum.APPROVED_AS.value:
+                return True
 
-        # И что статус запроса — либо APPROVED_ZD, либо ISSUED
-        allowed_statuses = {
-            RequestStatusEnum.APPROVED_ZD.value,
-            RequestStatusEnum.ISSUED.value,
-        }
-        if has_checkpoint and request.status in allowed_statuses:
-            return True
-
-    # Во всех остальных случаях — отказ
+    # Fallback: if none of the above, deny access
     return False
 
 # Visibility for listing requests (to be used in crud.get_requests query building)
@@ -254,7 +270,13 @@ def get_request_visibility_filters_for_user(db: Session, user: models.User) -> d
 
     role_code = user.role.code
 
-    if role_code in [constants.ADMIN_ROLE_CODE, constants.DCS_OFFICER_ROLE_CODE, constants.ZD_DEPUTY_HEAD_ROLE_CODE]:
+    if role_code in [
+        constants.ADMIN_ROLE_CODE,
+        constants.USB_ROLE_CODE, # Updated
+        constants.AS_ROLE_CODE   # Updated
+        # constants.DCS_OFFICER_ROLE_CODE, # Deprecated
+        # constants.ZD_DEPUTY_HEAD_ROLE_CODE # Deprecated
+    ]:
         filters["is_unrestricted"] = True
     elif role_code in [constants.DEPARTMENT_HEAD_ROLE_CODE, constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, constants.UNIT_HEAD_ROLE_CODE, constants.DEPUTY_UNIT_HEAD_ROLE_CODE]:
         if user.department_id:
@@ -271,20 +293,81 @@ def get_request_visibility_filters_for_user(db: Session, user: models.User) -> d
             # filters["exact_department_id"] = user.department_id # Old logic, changed to department_ids
         else:
             filters["department_ids"] = []
-    elif role_code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):
+    elif role_code.startswith(constants.KPP_ROLE_PREFIX): # Changed to KPP_ROLE_PREFIX
+        kpp_checkpoint_id = get_kpp_checkpoint_id_from_user(user)
+        if kpp_checkpoint_id is not None:
+            filters["checkpoint_id"] = kpp_checkpoint_id
+            filters["target_statuses"] = [
+                schemas.RequestStatusEnum.APPROVED_AS.value, # New final approval status
+                # schemas.RequestStatusEnum.ISSUED.value, # If ISSUED is still separate and relevant for KPP
+            ]
+        else: # Invalid KPP role format
+            filters["checkpoint_id"] = -1
+    elif role_code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX): # Existing specific checkpoint operator
         suffix = role_code[len(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):]
         try:
             cp_id = int(suffix)
             filters["checkpoint_id"] = cp_id
-            filters["target_statuses"] = [
-                schemas.RequestStatusEnum.APPROVED_ZD.value,
-                schemas.RequestStatusEnum.ISSUED.value,
+            filters["target_statuses"] = [ # These might be technical operators seeing different states
+                schemas.RequestStatusEnum.APPROVED_AS.value,
+                schemas.RequestStatusEnum.ISSUED.value, # Retaining ISSUED for them if it's distinct
             ]
         except ValueError:
-            filters["checkpoint_id"] = -1 # Invalid role code
+            filters["checkpoint_id"] = -1
 
     # Fallback for other roles (e.g. EMPLOYEE_ROLE_CODE or any unhandled manager role)
     else:
         filters["creator_id"] = user.id
 
     return filters
+
+
+# --- RBAC Functions for Audit Log Viewing ---
+
+def can_view_all_audit_logs(user: models.User) -> bool:
+    """
+    Checks if the user has a role that grants access to all audit logs.
+    (e.g., Admin, USB, AS).
+    """
+    if not user.role:
+        return False
+    return user.role.code in [
+        constants.ADMIN_ROLE_CODE,
+        constants.USB_ROLE_CODE,
+        constants.AS_ROLE_CODE
+        # Add other roles if they should see all audit logs
+    ]
+
+def get_allowed_actor_department_ids_for_audit_logs(db: Session, user: models.User) -> Optional[List[int]]:
+    """
+    Returns a list of department IDs for which the current user (e.g., a manager)
+    can see audit logs created by actors from those departments.
+    Returns None if no department-based restriction (e.g., for admin/usb/as who see all, handled by can_view_all_audit_logs).
+    Returns an empty list if the user is a manager but has no applicable departments.
+    """
+    if not user.role or not user.department_id:
+        return []
+
+    # Using the same logic as for visit logs for managers seems appropriate initially.
+    # This means managers see audit logs of actors from their department and sub-departments.
+    # This assumes AuditLog.actor.department_id is the filter target.
+
+    role_code = user.role.code
+    user_dept_id = user.department_id
+
+    manager_roles_for_dept_hierarchy = [
+        constants.DEPARTMENT_HEAD_ROLE_CODE,
+        constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE,
+        constants.UNIT_HEAD_ROLE_CODE,
+        constants.DEPUTY_UNIT_HEAD_ROLE_CODE,
+        constants.DIVISION_MANAGER_ROLE_CODE, # Division managers see their whole division
+        constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE
+    ]
+    if role_code in manager_roles_for_dept_hierarchy:
+        # Ensure the department type matches for Division Managers if that's a strict rule
+        if role_code in [constants.DIVISION_MANAGER_ROLE_CODE, constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
+            if not (user.department and user.department.type == models.DepartmentType.DIVISION):
+                return [] # Division manager not in a division type department
+        return crud.get_department_descendant_ids(db, user_dept_id)
+
+    return [] # Default for other roles: no department-specific view unless they can see all.

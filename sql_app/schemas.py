@@ -27,19 +27,34 @@ class ApprovalStatusEnum(str, enum.Enum):
 
 class RequestStatusEnum(str, enum.Enum):
     DRAFT = "DRAFT"
-    PENDING_DCS = "PENDING_DCS"
-    APPROVED_DCS = "APPROVED_DCS"
-    DECLINED_DCS = "DECLINED_DCS"
-    PENDING_ZD = "PENDING_ZD"
-    APPROVED_ZD = "APPROVED_ZD"
-    DECLINED_ZD = "DECLINED_ZD"
-    ISSUED = "ISSUED" # Pass issued
+
+    PENDING_USB = "PENDING_USB" # New: Submitted, awaiting USB approval
+    APPROVED_USB = "APPROVED_USB" # New: USB approved, typically moves to PENDING_AS
+    DECLINED_USB = "DECLINED_USB" # New: USB declined
+
+    PENDING_AS = "PENDING_AS"   # New: Submitted (if direct) or USB approved, awaiting AS approval
+    APPROVED_AS = "APPROVED_AS" # New: AS approved (final approval before KPP) -> consider this as ISSUED
+    DECLINED_AS = "DECLINED_AS" # New: AS declined
+
+    # Old statuses - to be phased out or mapped if necessary
+    # PENDING_DCS = "PENDING_DCS"
+    # APPROVED_DCS = "APPROVED_DCS"
+    # DECLINED_DCS = "DECLINED_DCS"
+    # PENDING_ZD = "PENDING_ZD"
+    # APPROVED_ZD = "APPROVED_ZD"
+    # DECLINED_ZD = "DECLINED_ZD"
+
+    ISSUED = "ISSUED" # Pass issued (might be equivalent to APPROVED_AS)
     CLOSED = "CLOSED" # Request completed or expired
 
 class RequestPersonStatusEnum(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+class NationalityTypeEnum(str, enum.Enum):
+    KZ = "KZ"
+    FOREIGN = "FOREIGN"
 
 
 # ------------- Department Schemas -------------
@@ -188,42 +203,98 @@ class UserForRecipient(BaseModel): # Simplified User for Notification recipient
 
 # ------------- RequestPerson Schemas -------------
 
+from pydantic import BaseModel, Field, validator, root_validator
+
 class RequestPersonBase(BaseModel):
     firstname: str
     lastname: str
-    surname: Optional[str]
+    surname: Optional[str] = None
     birth_date: date
-    doc_type: str
-    doc_number: str
-    doc_start_date: date
-    doc_end_date: date
-    gender: Optional[GenderEnum]
-    citizenship: str
+
+    nationality: NationalityTypeEnum = NationalityTypeEnum.KZ
+    iin: Optional[str] = None
+
+    # Foreign document details
+    doc_type: Optional[str] = None # E.g., "PASSPORT"
+    doc_number: Optional[str] = None
+    doc_start_date: Optional[date] = None
+    doc_end_date: Optional[date] = None
+
+    gender: GenderEnum # Made mandatory as per model
+    citizenship: str # Country name for FOREIGN, "Kazakhstan" for KZ
     company: str
-    is_entered: Optional[bool] = False # Default to False
+    is_entered: Optional[bool] = False
     status: RequestPersonStatusEnum = RequestPersonStatusEnum.PENDING
     rejection_reason: Optional[str] = None
 
+    @root_validator(pre=True) # Changed to pre=True to ensure nationality is available
+    @classmethod
+    def check_iin_or_doc_number(cls, values):
+        nationality = values.get('nationality')
+        iin = values.get('iin')
+        doc_number = values.get('doc_number')
+        doc_type = values.get('doc_type') # Added doc_type to the check
+
+        if nationality == NationalityTypeEnum.KZ:
+            if not iin:
+                raise ValueError("IIN is required for KZ nationals.")
+            if len(iin) != 12 or not iin.isdigit():
+                raise ValueError("IIN must be 12 digits.")
+            # For KZ nationals, foreign doc fields can be optional or cleared
+            values['doc_type'] = None
+            values['doc_number'] = None
+            values['doc_start_date'] = None
+            values['doc_end_date'] = None
+        elif nationality == NationalityTypeEnum.FOREIGN:
+            if not doc_number:
+                raise ValueError("Document number is required for foreign nationals.")
+            if not doc_type:
+                raise ValueError("Document type is required for foreign nationals.")
+            # For foreign nationals, IIN can be optional or cleared
+            values['iin'] = None
+        else: # Should not happen if enum is used correctly
+            raise ValueError("Invalid nationality type.")
+
+        # Ensure citizenship matches nationality
+        if nationality == NationalityTypeEnum.KZ and values.get('citizenship', '').lower() != "kazakhstan":
+            # Overwrite or raise error. For now, let's try to overwrite for simplicity during creation.
+            # Consider making this stricter if needed.
+            values['citizenship'] = "Kazakhstan"
+            # raise ValueError("Citizenship must be 'Kazakhstan' for KZ nationals.")
+        elif nationality == NationalityTypeEnum.FOREIGN and values.get('citizenship', '').lower() == "kazakhstan":
+            raise ValueError("Citizenship cannot be 'Kazakhstan' for FOREIGN nationals.")
+        elif nationality == NationalityTypeEnum.FOREIGN and not values.get('citizenship'):
+             raise ValueError("Citizenship is required for FOREIGN nationals.")
+
+
+        return values
+
 class RequestPersonCreate(RequestPersonBase):
-    # status and rejection_reason will use defaults from RequestPersonBase
-    # or can be overridden if provided.
     pass
 
-class RequestPersonUpdate(BaseModel): # Changed from RequestPersonBase to allow partial updates
+class RequestPersonUpdate(BaseModel):
     firstname: Optional[str] = None
     lastname: Optional[str] = None
     surname: Optional[str] = None
     birth_date: Optional[date] = None
+
+    nationality: Optional[NationalityTypeEnum] = None
+    iin: Optional[str] = None
+
     doc_type: Optional[str] = None
     doc_number: Optional[str] = None
     doc_start_date: Optional[date] = None
     doc_end_date: Optional[date] = None
+
     gender: Optional[GenderEnum] = None
     citizenship: Optional[str] = None
     company: Optional[str] = None
-    # is_entered is usually system-updated, not by user directly in this context
     status: Optional[RequestPersonStatusEnum] = None
     rejection_reason: Optional[str] = None
+
+    # TODO: Add root_validator for update if nationality changes, to ensure consistency
+    # For example, if nationality changes from KZ to FOREIGN, IIN should be cleared and doc_number becomes required.
+    # This can be complex. For now, assume PATCH updates individual fields and relies on full object validation elsewhere if needed.
 
 
 class RequestPersonInDBBase(RequestPersonBase):
@@ -343,34 +414,66 @@ class AuditLog(AuditLogInDBBase):
 class BlackListBase(BaseModel):
     firstname: str
     lastname: str
-    surname: Optional[str]
-    birth_date: date
-    doc_type: str
-    doc_number: str
-    doc_start_date: date
-    doc_end_date: date
-    citizenship: str
-    company: str
-    reason: str
+    surname: Optional[str] = None
+    birth_date: date # Keep for matching
+
+    nationality: Optional[NationalityTypeEnum] = None # Optional on creation, can be inferred or set
+    iin: Optional[str] = None
+
+    doc_type: Optional[str] = None
+    doc_number: Optional[str] = None
+    # doc_start_date, doc_end_date not primary for blacklist record, but could be added if needed
+    citizenship: Optional[str] = None # Country if foreign
+
+    company: Optional[str] = None # Company might not always be known
+    reason: str # Reason for blacklisting should be mandatory
     status: str = 'ACTIVE'
+
+    @root_validator(pre=True)
+    @classmethod
+    def check_blacklist_identifier(cls, values):
+        iin = values.get('iin')
+        doc_number = values.get('doc_number')
+        nationality = values.get('nationality')
+
+        if nationality == NationalityTypeEnum.KZ:
+            if not iin:
+                raise ValueError("IIN is required for blacklisting a KZ national if nationality is specified as KZ.")
+            if len(iin) != 12 or not iin.isdigit():
+                raise ValueError("IIN must be 12 digits.")
+            values['doc_number'] = None # Clear foreign doc if KZ
+        elif nationality == NationalityTypeEnum.FOREIGN:
+            if not doc_number:
+                raise ValueError("Document number is required for blacklisting a foreign national if nationality is specified as FOREIGN.")
+            values['iin'] = None # Clear IIN if foreign
+        elif not iin and not doc_number: # If nationality is not specified, at least one identifier must be present
+             raise ValueError("Either IIN or Document Number must be provided for blacklisting.")
+
+        # If IIN is provided, try to infer nationality as KZ if not given
+        if iin and not nationality:
+            values['nationality'] = NationalityTypeEnum.KZ
+        # If doc_number is provided and not IIN, try to infer nationality as FOREIGN if not given
+        elif doc_number and not iin and not nationality:
+            values['nationality'] = NationalityTypeEnum.FOREIGN
+
+        return values
 
 class BlackListCreate(BlackListBase):
     pass
 
-class BlackListUpdate(BlackListBase):
+class BlackListUpdate(BaseModel): # Allow partial updates
     firstname: Optional[str] = None
     lastname: Optional[str] = None
     surname: Optional[str] = None
     birth_date: Optional[date] = None
+    nationality: Optional[NationalityTypeEnum] = None
+    iin: Optional[str] = None
     doc_type: Optional[str] = None
     doc_number: Optional[str] = None
-    doc_start_date: Optional[date] = None
-    doc_end_date: Optional[date] = None
     citizenship: Optional[str] = None
     company: Optional[str] = None
     reason: Optional[str] = None
     status: Optional[str] = None
-    # removed_by and removed_at are usually set by specific actions/endpoints
 
 class BlackListInDBBase(BlackListBase):
     id: int
@@ -481,13 +584,13 @@ class RequestForVisitLog(BaseModel):
 
 class VisitLogBase(BaseModel):
     request_id: int
-    request_person_id: int # Represents the visitor (RequestPerson)
+    request_person_id: int
+    checkpoint_id: Optional[int] = None # Made optional here, but will be required in VisitLogCreate by KPP
     check_out_time: Optional[datetime] = None
 
 class VisitLogCreate(VisitLogBase):
-    # check_in_time is auto-generated by the server (server_default=func.now())
-    # request_id and user_id are mandatory for creation
-    pass
+    checkpoint_id: int # KPP must provide this at entry
+    # request_id and request_person_id are inherited and mandatory
 
 class VisitLogUpdate(BaseModel):
     check_out_time: Optional[datetime] = None
@@ -495,10 +598,19 @@ class VisitLogUpdate(BaseModel):
 class VisitLogInDBBase(VisitLogBase):
     id: int
     check_in_time: datetime
+    checkpoint_id: int # Should be non-nullable in DB after KPP provides it
 
+    class Config:
+        from_attributes = True
+
+class SimplifiedCheckpointForVisitLog(BaseModel):
+    id: int
+    name: str
+    code: str
     class Config:
         from_attributes = True
 
 class VisitLog(VisitLogInDBBase):
     request: Optional[RequestForVisitLog] = None
-    request_person: Optional[RequestPersonForVisitLog] = None # Represents the visitor
+    request_person: Optional[RequestPersonForVisitLog] = None
+    checkpoint: Optional[SimplifiedCheckpointForVisitLog] = None # To show checkpoint details

@@ -522,3 +522,103 @@ async def reject_single_request_person(
         # Log error e
         print(f"[ERROR] User {current_user.username} (ID: {current_user.id}) encountered an unexpected error rejecting RequestPerson ID: {person_id} (Request ID: {request_id}). Error: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+# ------------- USB Full Request Approval/Rejection Endpoints -------------
+
+@router.post("/{request_id}/usb/approve-all", response_model=schemas.Request, tags=["USB Actions"])
+async def usb_approve_entire_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_usb_user) # Specific USB role needed
+):
+    try:
+        updated_request = crud.approve_request_usb(db=db, request_id=request_id, usb_user=current_user)
+        print(f"[INFO] USB User {current_user.username} (ID: {current_user.id}) APPROVED entire Request ID: {request_id}. New status: {updated_request.status}")
+        return updated_request
+    except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
+        print(f"[WARN] USB User {current_user.username} (ID: {current_user.id}) failed to APPROVE ALL for Request ID: {request_id}. Reason: {str(e)}")
+        if isinstance(e, crud.ResourceNotFoundException):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        else: # InvalidRequestStateException
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"[ERROR] USB User {current_user.username} (ID: {current_user.id}) - unexpected error APPROVE ALL Request ID: {request_id}. Error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+@router.post("/{request_id}/usb/reject-all", response_model=schemas.Request, tags=["USB Actions"])
+async def usb_reject_entire_request(
+    request_id: int,
+    payload: RequestPersonRejectionPayload, # Re-using for consistency, though it's for the whole request
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_usb_user) # Specific USB role needed
+):
+    if not payload.rejection_reason or len(payload.rejection_reason.strip()) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason cannot be empty.")
+    try:
+        updated_request = crud.decline_request_usb(db=db, request_id=request_id, usb_user=current_user, reason=payload.rejection_reason)
+        print(f"[INFO] USB User {current_user.username} (ID: {current_user.id}) REJECTED entire Request ID: {request_id} with reason: '{payload.rejection_reason}'. New status: {updated_request.status}")
+        return updated_request
+    except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
+        print(f"[WARN] USB User {current_user.username} (ID: {current_user.id}) failed to REJECT ALL for Request ID: {request_id}. Reason: {str(e)}")
+        if isinstance(e, crud.ResourceNotFoundException):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        else: # InvalidRequestStateException
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except HTTPException as e: # Catches 400 from CRUD if reason is empty there too
+        raise e
+    except Exception as e:
+        print(f"[ERROR] USB User {current_user.username} (ID: {current_user.id}) - unexpected error REJECT ALL Request ID: {request_id}. Error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+# ------------- AS Full Request Approval/Rejection Endpoints -------------
+
+@router.post("/{request_id}/as/approve-all", response_model=schemas.Request, tags=["AS Actions"])
+async def as_approve_entire_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_as_user) # Specific AS role needed
+):
+    try:
+        updated_request = crud.approve_request_as(db=db, request_id=request_id, as_user=current_user)
+        print(f"[INFO] AS User {current_user.username} (ID: {current_user.id}) APPROVED entire Request ID: {request_id}. New status: {updated_request.status}")
+        return updated_request
+    except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
+        print(f"[WARN] AS User {current_user.username} (ID: {current_user.id}) failed to APPROVE ALL for Request ID: {request_id}. Reason: {str(e)}")
+        if isinstance(e, crud.ResourceNotFoundException):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        else: # InvalidRequestStateException
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"[ERROR] AS User {current_user.username} (ID: {current_user.id}) - unexpected error APPROVE ALL Request ID: {request_id}. Error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+@router.post("/{request_id}/as/reject-all", response_model=schemas.Request, tags=["AS Actions"])
+async def as_reject_entire_request(
+    request_id: int,
+    payload: RequestPersonRejectionPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_as_user) # Specific AS role needed
+):
+    if not payload.rejection_reason or len(payload.rejection_reason.strip()) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason cannot be empty.")
+    try:
+        updated_request = crud.decline_request_as(db=db, request_id=request_id, as_user=current_user, reason=payload.rejection_reason)
+        print(f"[INFO] AS User {current_user.username} (ID: {current_user.id}) REJECTED entire Request ID: {request_id} with reason: '{payload.rejection_reason}'. New status: {updated_request.status}")
+        return updated_request
+    except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
+        print(f"[WARN] AS User {current_user.username} (ID: {current_user.id}) failed to REJECT ALL for Request ID: {request_id}. Reason: {str(e)}")
+        if isinstance(e, crud.ResourceNotFoundException):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        else: # InvalidRequestStateException
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"[ERROR] AS User {current_user.username} (ID: {current_user.id}) - unexpected error REJECT ALL Request ID: {request_id}. Error: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")

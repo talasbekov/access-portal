@@ -38,6 +38,10 @@ class RequestPersonStatus(enum.Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
 
+class NationalityType(enum.Enum):
+    KZ = "KZ"       # Kazakhstan Citizen
+    FOREIGN = "FOREIGN" # Foreign Citizen
+
 
 class Department(Base):
     __tablename__ = "departments"
@@ -183,12 +187,21 @@ class RequestPerson(Base):
     lastname = Column(String)
     surname = Column(String, nullable=True)
     birth_date = Column(Date, nullable=False)
-    doc_type = Column(String, nullable=False)
-    doc_number = Column(String, nullable=False)
-    doc_start_date = Column(Date, nullable=False)
-    doc_end_date = Column(Date, nullable=False)
+
+    nationality = Column(Enum(NationalityType), nullable=False, server_default=NationalityType.KZ.value)
+    iin = Column(String(12), nullable=True, index=True) # Indexed for potential lookups
+
+    # For foreign citizens
+    # doc_type can be 'PASSPORT', 'VISA', etc.
+    # The existing 'citizenship' field can store the country name for foreign nationals.
+    # The existing 'doc_number', 'doc_start_date', 'doc_end_date' will be used for foreign documents.
+    doc_type = Column(String, nullable=True) # Nullable if KZ and IIN is provided
+    doc_number = Column(String, nullable=True, index=True) # Nullable if KZ and IIN is provided, indexed
+    doc_start_date = Column(Date, nullable=True) # Nullable if KZ
+    doc_end_date = Column(Date, nullable=True)   # Nullable if KZ
+
     gender = Column(Enum(GenderEnum), nullable=False)
-    citizenship = Column(String, nullable=False)
+    citizenship = Column(String, nullable=False) # For foreign: country name. For KZ: "Kazakhstan"
     company = Column(String, nullable=False)
     is_entered = Column(Boolean, nullable=False, default=False)
     status = Column(Enum(RequestPersonStatus), nullable=False, server_default=RequestPersonStatus.PENDING.value, default=RequestPersonStatus.PENDING)
@@ -204,13 +217,19 @@ class VisitLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     # request_id is still relevant to know which overall request this visit belongs to.
     request_id = Column(Integer, ForeignKey("requests.id"), nullable=False)
-    request_person_id = Column(Integer, ForeignKey("request_persons.id"), nullable=False) # Changed from user_id
+    request_person_id = Column(Integer, ForeignKey("request_persons.id"), nullable=False)
     check_in_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     check_out_time = Column(DateTime(timezone=True), nullable=True)
+    checkpoint_id = Column(Integer, ForeignKey("checkpoints.id"), nullable=False)
 
     request = relationship("Request", back_populates="visit_logs")
-    request_person = relationship("RequestPerson", back_populates="visit_logs") # Changed from user
+    request_person = relationship("RequestPerson", back_populates="visit_logs")
+    checkpoint = relationship("Checkpoint") # Added relationship to Checkpoint
 
+    # NOTE: Data Retention Policy: VisitLog records should be managed (e.g., archived or purged)
+    # after 18 months as per operational requirements. This is typically handled by
+    # database maintenance scripts or scheduled jobs, not directly in application API logic
+    # unless specific admin endpoints for data management are implemented.
 
 class BlackList(Base):
     __tablename__ = "blacklist"
@@ -219,13 +238,19 @@ class BlackList(Base):
     firstname = Column(String)
     lastname = Column(String)
     surname = Column(String, nullable=True)
-    birth_date = Column(Date, nullable=False)
-    doc_type = Column(String, nullable=False)
-    doc_number = Column(String, nullable=False)
-    doc_start_date = Column(Date, nullable=False)
-    doc_end_date = Column(Date, nullable=False)
-    citizenship = Column(String, nullable=False)
-    company = Column(String, nullable=False)
+    birth_date = Column(Date, nullable=False) # Keep for matching
+
+    nationality = Column(Enum(NationalityType), nullable=True) # To distinguish IIN from foreign docs
+    iin = Column(String(12), nullable=True, index=True)
+
+    # doc_type, doc_number, etc. for foreign documents or if IIN is not the primary blacklist key
+    doc_type = Column(String, nullable=True)
+    doc_number = Column(String, nullable=True, index=True)
+    # doc_start_date and doc_end_date might be less relevant for blacklist matching than the number itself
+    # citizenship can be used to store the country for foreign nationals
+    citizenship = Column(String, nullable=True)
+
+    company = Column(String, nullable=True) # Company might not always be known for blacklist
     reason = Column(Text, nullable=True)
 
     added_by = Column(Integer, ForeignKey("users.id"))
