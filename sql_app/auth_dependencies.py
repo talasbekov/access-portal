@@ -9,7 +9,7 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
-from . import crud, models
+from . import crud, models, constants
 from .auth import decode_token as auth_decode_token
 from .dependencies import get_db
 
@@ -65,8 +65,6 @@ class AuthDependencies:
                 detail="Inactive user"
             )
         return current_user
-
-from .. import constants # Import constants
 
     @staticmethod
     def get_admin_user(  # Убрали async здесь
