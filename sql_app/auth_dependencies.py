@@ -82,12 +82,14 @@ class AuthDependencies:
     def get_security_officer_user(  # Убрали async здесь
         current_user: models.User = Depends(get_current_active_user)  # Правильная зависимость
     ) -> models.User:
-        """Требовать привилегии офицера безопасности или выше"""
+        """Требовать привилегии офицера безопасности, УСБ, АС или выше (Админ)"""
         allowed_roles = [
-            constants.SECURITY_OFFICER_ROLE_CODE,
-            constants.DCS_OFFICER_ROLE_CODE,
-            constants.ZD_DEPUTY_HEAD_ROLE_CODE,
-            constants.ADMIN_ROLE_CODE
+            constants.SECURITY_OFFICER_ROLE_CODE, # Generic security officer
+            constants.USB_ROLE_CODE,              # New USB role
+            constants.AS_ROLE_CODE,               # New AS role
+            constants.ADMIN_ROLE_CODE,
+            # constants.DCS_OFFICER_ROLE_CODE,    # Deprecated
+            # constants.ZD_DEPUTY_HEAD_ROLE_CODE  # Deprecated
         ]
         if not current_user.role or current_user.role.code not in allowed_roles:
             raise HTTPException(
@@ -110,18 +112,59 @@ class AuthDependencies:
 
     @staticmethod
     def get_kpp_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
-        """Требовать роль КПП"""
-        if not current_user.role or current_user.role.code != constants.KPP_ROLE_CODE:
+        """Требовать роль КПП (e.g., KPP-1, KPP-2)"""
+        if not current_user.role or not current_user.role.code.startswith(constants.KPP_ROLE_PREFIX):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="KPP privileges required"
+                detail="KPP privileges required (e.g., KPP-1, KPP-2)."
             )
+        return current_user
+
+    @staticmethod
+    def get_usb_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль УСБ"""
+        if not current_user.role or current_user.role.code != constants.USB_ROLE_CODE:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="USB privileges required.")
+        return current_user
+
+    @staticmethod
+    def get_as_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль АС"""
+        if not current_user.role or current_user.role.code != constants.AS_ROLE_CODE:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="AS privileges required.")
+        return current_user
+
+    @staticmethod
+    def get_nach_departamenta_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль Начальника Департамента"""
+        if not (current_user.role and current_user.role.code == constants.DEPARTMENT_HEAD_ROLE_CODE and
+                current_user.department and current_user.department.type == models.DepartmentType.DEPARTMENT):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department Head privileges required for a department.")
+        return current_user
+
+    @staticmethod
+    def get_nach_upravleniya_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль Начальника Управления (Division or Unit)"""
+        if not current_user.role or not current_user.department:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role or department not defined.")
+
+        is_head_of_division = (current_user.role.code == constants.DIVISION_MANAGER_ROLE_CODE and
+                               current_user.department.type == models.DepartmentType.DIVISION)
+        is_head_of_unit = (current_user.role.code == constants.UNIT_HEAD_ROLE_CODE and
+                           current_user.department.type == models.DepartmentType.UNIT)
+
+        if not (is_head_of_division or is_head_of_unit):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Head of Management Unit (Division or Unit) privileges required.")
         return current_user
 
 # Создаем экземпляры для легкого импорта
 get_current_user = AuthDependencies.get_current_user
 get_current_active_user = AuthDependencies.get_current_active_user
 get_admin_user = AuthDependencies.get_admin_user
-get_security_officer_user = AuthDependencies.get_security_officer_user
+get_security_officer_user = AuthDependencies.get_security_officer_user # May need review if USB/AS fully replace its functions
 get_checkpoint_operator_user = AuthDependencies.get_checkpoint_operator_user
-get_kpp_user = AuthDependencies.get_kpp_user # Exporting the new dependency
+get_kpp_user = AuthDependencies.get_kpp_user
+get_usb_user = AuthDependencies.get_usb_user
+get_as_user = AuthDependencies.get_as_user
+get_nach_departamenta_user = AuthDependencies.get_nach_departamenta_user
+get_nach_upravleniya_user = AuthDependencies.get_nach_upravleniya_user
