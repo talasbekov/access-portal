@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, date
 import enum
 
-from sql_app.models import GenderEnum, RequestDuration
+from .models import GenderEnum, RequestDuration
 
 
 # ------------- Enums (mirroring models.py) -------------
