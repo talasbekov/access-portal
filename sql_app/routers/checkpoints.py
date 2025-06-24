@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
-from ..rbac import CHECKPOINT_OPERATOR_ROLE_PREFIX
+from ..constants import CHECKPOINT_OPERATOR_ROLE_PREFIX
 from ..auth_dependencies import (
     get_current_user,
     get_current_active_user,

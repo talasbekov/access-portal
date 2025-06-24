@@ -2,7 +2,6 @@
 Централизованные зависимости аутентификации для избежания дублирования кода в роутерах.
 """
 import os
-from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError

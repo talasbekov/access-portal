@@ -5,7 +5,6 @@ from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from pydantic import ValidationError
 import logging
 from typing import Union
 

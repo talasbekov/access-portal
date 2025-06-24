@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     api_description: str = "Комплексная система управления посетителями с RBAC"
 
     # CORS настройки - изменено для правильного парсинга
-    cors_origins: Union[str, List[str]] = "http://localhost,http://localhost:5173,http://localhost:3000"
+    cors_origins: Union[str, List[str]] = "http://localhost,http://localhost:5173,http://localhost:3000,*"
 
     # Настройки пагинации
     default_page_size: int = 100
