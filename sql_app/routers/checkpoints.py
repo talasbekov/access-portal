@@ -11,6 +11,13 @@ from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
 from ..rbac import CHECKPOINT_OPERATOR_ROLE_PREFIX
+from ..auth_dependencies import (
+    get_current_user,
+    get_current_active_user,
+    get_admin_user,
+    get_security_officer_user,
+    get_checkpoint_operator_user
+)
 
 load_dotenv()
 
@@ -75,7 +82,7 @@ async def read_checkpoint_requests(
     limit: int = 100,
     status_filter: Optional[schemas.RequestStatusEnum] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_checkpoint_operator_user_local)
+    current_user: models.User = Depends(get_checkpoint_operator_user)
 ):
     """
     Retrieve requests for a specific checkpoint relevant for the operator.

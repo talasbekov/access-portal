@@ -32,11 +32,13 @@ router = APIRouter(
 )
 
 # Updated oauth2_scheme, local to this router
-# If dependencies.py oauth2_scheme is fixed, this could be imported, but local definition avoids issues.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token") # Updated tokenUrl
 
 @router.post("/token", response_model=schemas.Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)): # Changed to async
+def login_for_access_token(  # Убрали async
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
     user = crud.authenticate_user(db, username=form_data.username, password=form_data.password)
     if not user:
         raise HTTPException(
@@ -60,7 +62,10 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     return schemas.Token(access_token=access_token, refresh_token=refresh_token, token_type="bearer")
 
 # Local version of get_current_user for this router, using its own oauth2_scheme
-async def get_current_user_from_auth_router(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
+def get_current_user_from_auth_router(  # Убрали async
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> models.User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -92,13 +97,17 @@ async def get_current_user_from_auth_router(token: str = Depends(oauth2_scheme),
         raise credentials_exception
     return user
 
-async def get_current_active_user_from_auth_router(current_user: models.User = Depends(get_current_user_from_auth_router)) -> models.User:
+def get_current_active_user_from_auth_router(  # Убрали async
+    current_user: models.User = Depends(get_current_user_from_auth_router)
+) -> models.User:
     if not current_user.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user")
     return current_user
 
 @router.get("/me", response_model=schemas.User)
-async def read_users_me(current_user: models.User = Depends(get_current_active_user_from_auth_router)):
+def read_users_me(  # Убрали async
+    current_user: models.User = Depends(get_current_active_user_from_auth_router)
+):
     # The dependency already fetches and validates the user.
     # The schemas.User response model will handle converting the models.User object.
     return current_user

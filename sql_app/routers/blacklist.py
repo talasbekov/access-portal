@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
+from ..auth_dependencies import (
+    get_current_user,
+    get_current_active_user,
+    get_admin_user,
+    get_security_officer_user,
+    get_checkpoint_operator_user
+)
 
 load_dotenv()
 
@@ -110,7 +117,7 @@ async def read_all_blacklist_entries(
 async def create_blacklist_entry_endpoint(
     entry_in: schemas.BlackListCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_user_local)
+    current_user: models.User = Depends(get_security_officer_user)
 ):
     """
     Create a new blacklist entry.
@@ -126,7 +133,7 @@ async def create_blacklist_entry_endpoint(
 async def remove_blacklist_entry_endpoint( # Renamed to match plan's intent (soft delete)
     blacklist_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_user_local)
+    current_user: models.User = Depends(get_security_officer_user)
 ):
     """
     Deactivates a blacklist entry (soft delete by marking status=INACTIVE).

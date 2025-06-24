@@ -5,10 +5,17 @@ from datetime import datetime
 
 from .. import crud, models, schemas
 from ..dependencies import get_db
+from ..auth_dependencies import (
+    get_current_user,
+    get_current_active_user,
+    get_admin_user,
+    get_security_officer_user,
+    get_checkpoint_operator_user
+)
 # Assuming a similar auth dependency structure as in requests.py
 # If get_current_active_user is defined in a common auth module, import from there
 # For now, copying the dependency function signature for clarity, will need to ensure it's available
-from .requests import get_current_active_user_for_req_router as get_current_active_user # Reusing from requests.py for now
+# from .requests import get_current_active_user_for_req_router as get_current_active_user # Reusing from requests.py for now
 # Or define a common one in dependencies.py if it makes more sense
 
 # Role codes for access control (should ideally be imported from a central config/rbac module)

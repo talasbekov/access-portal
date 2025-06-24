@@ -1,5 +1,4 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime, Date, Table
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -96,7 +95,8 @@ class AuditLog(Base):
     action = Column(String)
     actor_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    data = Column(MutableDict.as_mutable(JSONB), nullable=True) # Renamed from metadata to data
+    # Исправлено: используем JSON вместо JSONB для совместимости с SQLite
+    data = Column(MutableDict.as_mutable(JSON), nullable=True)
 
     actor = relationship("User", back_populates="audit_logs")
 
@@ -125,7 +125,7 @@ class User(Base):
 
     role_id = Column(Integer, ForeignKey("roles.id"))
     role = relationship("Role", back_populates="users")
-    department_id = Column(Integer, ForeignKey("departments.id"), nullable=True) # Added, nullable for now
+    department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     department = relationship("Department", back_populates="users")
     approvals = relationship("Approval", back_populates="approver")
     audit_logs = relationship("AuditLog", back_populates="actor")
@@ -133,8 +133,7 @@ class User(Base):
     removed_blacklist_entries = relationship("BlackList", foreign_keys="[BlackList.removed_by]", back_populates="removed_by_user")
     notifications = relationship("Notification", back_populates="recipient", foreign_keys="[Notification.user_id]")
 
-
-    requests = relationship("Request", back_populates="creator") # Renamed from user
+    requests = relationship("Request", back_populates="creator")
     visit_logs = relationship("VisitLog", back_populates="user")
 
 
@@ -143,8 +142,8 @@ class Request(Base):
 
     id = Column(Integer, primary_key=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    start_date = Column(Date, nullable=False) # Added as per detailed instructions
-    end_date = Column(Date, nullable=False) # Added as per detailed instructions
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
     status = Column(String, default='DRAFT')
     arrival_purpose = Column(String, nullable=False)
     accompanying = Column(String, nullable=False)
@@ -183,7 +182,7 @@ class RequestPerson(Base):
     doc_start_date = Column(Date, nullable=False)
     doc_end_date = Column(Date, nullable=False)
     gender = Column(Enum(GenderEnum), nullable=False)
-    citizenship = Column(String, nullable=False) # Storing as string, not FK to Citizenship
+    citizenship = Column(String, nullable=False)
     company = Column(String, nullable=False)
     is_entered = Column(Boolean, nullable=False, default=False)
 
@@ -195,7 +194,7 @@ class VisitLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     request_id = Column(Integer, ForeignKey("requests.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False) # Represents the visitor
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     check_in_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     check_out_time = Column(DateTime(timezone=True), nullable=True)
 
@@ -215,15 +214,15 @@ class BlackList(Base):
     doc_number = Column(String, nullable=False)
     doc_start_date = Column(Date, nullable=False)
     doc_end_date = Column(Date, nullable=False)
-    citizenship = Column(String, nullable=False)  # Storing as string, not FK to Citizenship
+    citizenship = Column(String, nullable=False)
     company = Column(String, nullable=False)
-    reason = Column(Text, nullable=True) # Changed from String to Text for potentially longer reasons
+    reason = Column(Text, nullable=True)
 
     added_by = Column(Integer, ForeignKey("users.id"))
     added_at = Column(DateTime(timezone=True), server_default=func.now())
     removed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     removed_at = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String, default='ACTIVE', index=True) # e.g. ACTIVE, INACTIVE
+    status = Column(String, default='ACTIVE', index=True)
 
     added_by_user = relationship("User", foreign_keys=[added_by], back_populates="created_blacklist_entries")
     removed_by_user = relationship("User", foreign_keys=[removed_by], back_populates="removed_blacklist_entries")
@@ -233,7 +232,7 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False) # Recipient
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     message = Column(String, nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     is_read = Column(Boolean, default=False, nullable=False)

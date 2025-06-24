@@ -11,6 +11,13 @@ from .. import crud, models, schemas
 from ..dependencies import get_db
 from ..auth import decode_token as auth_decode_token
 from ..rbac import ADMIN_ROLE_CODE # Import admin role code
+from ..auth_dependencies import (
+    get_current_user,
+    get_current_active_user,
+    get_admin_user,
+    get_security_officer_user,
+    get_checkpoint_operator_user
+)
 
 load_dotenv()
 
@@ -70,7 +77,7 @@ async def read_roles_endpoint( # Renamed, async
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_admin_user_local) # Admin protected
+    current_user: models.User = Depends(get_admin_user) # Admin protected
 ):
     roles = crud.get_roles(db, skip=skip, limit=limit)
     return roles
@@ -79,7 +86,7 @@ async def read_roles_endpoint( # Renamed, async
 async def read_role_by_id_endpoint( # Renamed, async
     role_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_admin_user_local) # Admin protected
+    current_user: models.User = Depends(get_admin_user) # Admin protected
 ):
     db_role = crud.get_role(db, role_id=role_id) # crud.get_role instead of get_role_by_id for consistency
     if db_role is None:
@@ -90,7 +97,7 @@ async def read_role_by_id_endpoint( # Renamed, async
 async def create_role_endpoint( # Renamed, async
     role: schemas.RoleCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_admin_user_local) # Admin protected
+    current_user: models.User = Depends(get_admin_user) # Admin protected
 ):
     existing_role_by_name = crud.get_role_by_name(db, role_name=role.name)
     if existing_role_by_name:
@@ -109,7 +116,7 @@ async def create_role_endpoint( # Renamed, async
 async def delete_role_endpoint( # Renamed, async
     role_id: int, # Changed to int
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_admin_user_local) # Admin protected
+    current_user: models.User = Depends(get_admin_user) # Admin protected
 ):
     db_role = crud.get_role(db, role_id=role_id)
     if db_role is None:
@@ -130,7 +137,7 @@ async def delete_role_endpoint( # Renamed, async
 #     role_id: int,
 #     role_in: schemas.RoleUpdate,
 #     db: Session = Depends(get_db),
-#     current_user: models.User = Depends(get_admin_user_local)
+#     current_user: models.User = Depends(get_admin_user)
 # ):
 #     db_role = crud.get_role(db, role_id=role_id)
 #     if not db_role:

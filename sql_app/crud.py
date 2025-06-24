@@ -8,7 +8,11 @@ from sqlalchemy import or_
 from . import models, schemas, auth, rbac
 from .models import RequestDuration
 from .routers.requests import ADMIN_ROLE_CODE
-
+from .error_handlers import (
+    BlacklistedPersonException,
+    ResourceNotFoundException,
+    InvalidRequestStateException
+)
 
 # ------------- Department CRUD -------------
 
@@ -235,8 +239,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
             create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0,
                              action="CREATE_FAIL_BLACKLISTED",
                              data={"message": f"Attempt to create request with blacklisted person: {person_schema.full_name}"})
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"Visitor '{person_schema.full_name}' is on the blacklist.")
+            raise BlacklistedPersonException(person_schema.firstname + " " + person_schema.lastname)
 
     # 2. Pass Type/Creation Rules
     if not creator.role or not creator.department:
@@ -495,10 +498,10 @@ def update_request_draft(db: Session, request_id: int, request_update: schemas.R
     db_request = get_request(db, request_id=request_id, user=user)
     if not db_request:
         # get_request would have raised 403 if not allowed, or this means 404
-        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+        raise ResourceNotFoundException("Request", request_id)
 
     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
-        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Only DRAFT requests can be updated.")
+        raise InvalidRequestStateException(db_request.status, "DRAFT")
 
     from . import rbac # Import rbac module for creator check
     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user): # Allow admin to edit drafts too
@@ -534,14 +537,14 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
     from fastapi import status as fastapi_status
     db_request = get_request(db, request_id=request_id, user=user)
     if not db_request:
-        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+        raise ResourceNotFoundException("Request", request_id)
 
     from . import rbac
     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
 
     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
-        raise HTTPException(status_code=fastapi_status.HTTP_400_BAD_REQUEST, detail="Request is not in DRAFT status.")
+        raise InvalidRequestStateException(db_request.status, "DRAFT")
 
     print(len(db_request.request_persons))
     len_person_data = len(db_request.request_persons)
@@ -566,7 +569,7 @@ def approve_request_step(db: Session, request_id: int, approver: models.User, co
     from fastapi import status as fastapi_status
     db_request = get_request(db, request_id=request_id, user=approver)
     if not db_request:
-        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+        raise ResourceNotFoundException("Request", request_id)
 
     from . import rbac
     new_status_val = ""
@@ -609,7 +612,7 @@ def decline_request_step(db: Session, request_id: int, approver: models.User, co
     from fastapi import status as fastapi_status
     db_request = get_request(db, request_id=request_id, user=approver)
     if not db_request:
-        raise HTTPException(status_code=fastapi_status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible.")
+        raise ResourceNotFoundException("Request", request_id)
 
     from . import rbac
     new_status_val = ""

@@ -7,7 +7,13 @@ from jose import JWTError, jwt # Added
 from ..dependencies import get_db
 from .. import crud, models, schemas, rbac
 from ..auth import decode_token as auth_decode_token
-
+from ..auth_dependencies import (
+    get_current_user,
+    get_current_active_user,
+    get_admin_user,
+    get_security_officer_user,
+    get_checkpoint_operator_user
+)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -95,7 +101,7 @@ async def read_all_requests( # Changed to async
     limit: int = 100,
     statuses: Optional[List[schemas.RequestStatusEnum]] = Depends(parse_status_filter),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # This endpoint should now primarily call crud.get_requests
     # The crud.get_requests function is responsible for applying RBAC based on the user
@@ -120,7 +126,7 @@ async def read_all_requests( # Changed to async
 async def create_request_endpoint(
     request_in: schemas.RequestCreate, # Renamed from request_data
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # All business logic (blacklist check, pass type rules, audit, notifications)
     # is now handled within crud.create_request.
@@ -144,7 +150,7 @@ async def create_request_endpoint(
 async def submit_request_for_approval(
     request_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # Business logic (status checks, ownership, audit, notifications) is in crud.submit_request
     try:
@@ -162,7 +168,7 @@ async def update_request_endpoint(
     request_id: int,
     request_update: schemas.RequestUpdate, # Renamed from request_in
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # Business logic (status checks, ownership, audit) is in crud.update_request_draft
     try:
@@ -179,7 +185,7 @@ async def update_request_endpoint(
 async def read_single_request(
     request_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # crud.get_request now handles RBAC and raises HTTPException if not found or not allowed
     db_request = crud.get_request(db, request_id=request_id, user=current_user)
@@ -192,7 +198,7 @@ async def read_single_request(
 async def delete_single_request(
     request_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # Fetch request with RBAC check
     db_request_to_delete = crud.get_request(db, request_id=request_id, user=current_user)
@@ -230,7 +236,7 @@ async def dcs_action_on_request(
     action: schemas.ApprovalStatusEnum,
     payload: schemas.ApprovalCommentPayload,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # Business logic (role check, status check, approval/decline, audit, notifications)
     # is now in crud.approve_request_step or crud.decline_request_step.
@@ -257,7 +263,7 @@ async def zd_action_on_request(
     action: schemas.ApprovalStatusEnum,
     payload: schemas.ApprovalCommentPayload,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     # Business logic is now in crud.approve_request_step or crud.decline_request_step.
     # The CRUD functions will internally check if the user (approver) has the correct role (ZD)
@@ -284,7 +290,7 @@ async def create_visit_log_for_request(
     request_id: int,
     visit_log_in: schemas.VisitLogCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Create a new visit log entry for a specific request.
@@ -346,7 +352,7 @@ async def read_visit_logs_for_request(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_req_router)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Retrieve all visit log entries for a specific request.

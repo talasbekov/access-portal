@@ -55,7 +55,7 @@ class DepartmentInDBBase(DepartmentBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Department(DepartmentInDBBase):
     children: List[Department] = [] # For hierarchical representation
@@ -81,7 +81,7 @@ class CheckpointInDBBase(CheckpointBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Checkpoint(CheckpointInDBBase):
     pass
@@ -104,7 +104,7 @@ class RoleInDBBase(RoleBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Role(RoleInDBBase):
     pass
@@ -117,7 +117,7 @@ class DepartmentSmall(BaseModel): # A smaller version for nesting if needed, or 
     name: str
     type: DepartmentTypeEnum
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UserBase(BaseModel):
     username: str
@@ -148,7 +148,7 @@ class UserInDBBase(UserBase):
     department: Optional[DepartmentSmall] = None # Using smaller Department schema for nesting
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class User(UserInDBBase):
     pass
@@ -158,28 +158,28 @@ class UserForAudit(BaseModel): # Simplified User for Audit Log actor
     username: str
     full_name: Optional[str] = None
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UserForApproval(BaseModel): # Simplified User for Approval approver
     id: int
     username: str
     full_name: Optional[str] = None
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UserForBlackList(BaseModel): # Simplified User for BlackList user fields
     id: int
     username: str
     full_name: Optional[str] = None
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UserForRecipient(BaseModel): # Simplified User for Notification recipient
     id: int
     username: str
     full_name: Optional[str] = None
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # ------------- RequestPerson Schemas -------------
 
@@ -209,7 +209,7 @@ class RequestPersonInDBBase(RequestPersonBase):
     request_id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class RequestPerson(RequestPersonInDBBase):
     pass
@@ -253,7 +253,7 @@ class RequestInDBBase(RequestBase): # Inherits start_date, end_date from Request
     request_persons: List[RequestPerson] = []
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Request(RequestInDBBase):
     pass
@@ -281,7 +281,7 @@ class ApprovalInDBBase(ApprovalBase):
     approver: Optional[UserForApproval] = None # Simplified User
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Approval(ApprovalInDBBase):
     request: Optional[Request] = None # Full Request, could be cyclical, use RequestInDBBase or smaller version if needed
@@ -308,7 +308,7 @@ class AuditLogInDBBase(AuditLogBase):
     actor: Optional[UserForAudit] = None # Simplified User
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class AuditLog(AuditLogInDBBase):
     pass
@@ -359,7 +359,7 @@ class BlackListInDBBase(BlackListBase):
 
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class BlackList(BlackListInDBBase):
     pass
@@ -404,7 +404,7 @@ class RequestSmall(BaseModel): # Simplified Request for Notification
     created_at: datetime
     # Potentially add creator_id or a very small creator summary if needed
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class NotificationBase(BaseModel):
     user_id: int # Recipient user ID
@@ -420,7 +420,7 @@ class NotificationInDBBase(NotificationBase):
     timestamp: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class Notification(NotificationInDBBase):
     recipient: Optional[UserForRecipient] = None
@@ -435,7 +435,7 @@ class UserForVisitLog(BaseModel):
     full_name: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # Simplified Request schema for VisitLog
 class RequestForVisitLog(BaseModel):
@@ -448,7 +448,7 @@ class RequestForVisitLog(BaseModel):
     creator_department_name: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class VisitLogBase(BaseModel):
     request_id: int
@@ -468,7 +468,7 @@ class VisitLogInDBBase(VisitLogBase):
     check_in_time: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class VisitLog(VisitLogInDBBase):
     request: Optional[RequestForVisitLog] = None

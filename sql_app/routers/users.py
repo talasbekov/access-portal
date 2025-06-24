@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 from .. import crud, models, schemas
 from ..dependencies import get_db
 from ..auth import decode_token as auth_decode_token
+from ..auth_dependencies import (
+    get_current_user,
+    get_current_active_user,
+    get_admin_user,
+    get_security_officer_user,
+    get_checkpoint_operator_user
+)
 
 load_dotenv()
 
@@ -60,7 +67,7 @@ async def get_current_active_user_for_users_router(current_user: models.User = D
 # --- End Real Authentication Logic ---
 
 @router.get("/me", response_model=schemas.User)
-async def read_users_me(current_user: models.User = Depends(get_current_active_user_for_users_router)):
+async def read_users_me(current_user: models.User = Depends(get_current_active_user)):
     """
     Get current logged-in user.
     """
@@ -94,7 +101,7 @@ async def read_users_endpoint( # Renamed
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_users_router) # Added Auth
+    current_user: models.User = Depends(get_current_active_user) # Added Auth
 ):
     # TODO: Add RBAC - e.g., only admins can list all users.
     # from .. import rbac
@@ -108,7 +115,7 @@ async def read_users_endpoint( # Renamed
 async def read_user_endpoint( # Renamed
     user_id: int,  # Changed to int
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_users_router) # Added Auth
+    current_user: models.User = Depends(get_current_active_user) # Added Auth
 ):
     # TODO: Add RBAC - admin or self can view.
     # from .. import rbac
@@ -123,7 +130,7 @@ async def read_user_endpoint( # Renamed
 # but can be reinstated or refactored if specific use cases exist.
 
 # @router.get("/delete_user/", response_model = bool) # Non-standard: GET for delete
-# async def delete_user_endpoint(user_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_active_user_for_users_router)):
+# async def delete_user_endpoint(user_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_active_user)):
 #     # TODO: RBAC, and use HTTP DELETE method
 #     # db_user_to_delete = crud.get_user(db, user_id=int(user_id))
 #     # if not db_user_to_delete: ...
@@ -132,7 +139,7 @@ async def read_user_endpoint( # Renamed
 
 
 # @router.get("/username/{username}/id", response_model=int) # Changed path for clarity
-# async def get_user_id_by_username_endpoint(username: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_active_user_for_users_router)):
+# async def get_user_id_by_username_endpoint(username: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_active_user)):
 #     # TODO: RBAC - who needs this?
 #     db_user = crud.get_user_by_username(db, username=username)
 #     if db_user is None:
@@ -140,7 +147,7 @@ async def read_user_endpoint( # Renamed
 #     return db_user.id
 
 # @router.get("/username/{username}", response_model=schemas.User) # Changed path from /users_username/
-# async def read_user_by_username_endpoint(username: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_active_user_for_users_router)):
+# async def read_user_by_username_endpoint(username: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_active_user)):
 #     # TODO: RBAC
 #     db_user = crud.get_user_by_username(db, username=username)
 #     if db_user is None:
