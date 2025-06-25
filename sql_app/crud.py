@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional, Any, Union
 from fastapi import HTTPException, status
-from datetime import date
+from datetime import date, timedelta, datetime
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import or_
 
@@ -321,60 +321,59 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
 # Role constants are now in constants.py and imported.
 
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
-    # 1. Blacklist Check
-    for person_schema in request_in.request_persons: # person_schema is schemas.RequestPersonCreate
+    # 1. Проверка чёрного списка
+    for person_schema in request_in.request_persons:
         if is_person_blacklisted(
-            db,
-            firstname=person_schema.firstname,
-            lastname=person_schema.lastname,
-            iin=person_schema.iin, # schemas.RequestPersonCreate now has iin
-            doc_number=person_schema.doc_number, # and doc_number
-            birth_date=person_schema.birth_date # and birth_date
-            ):
+                db,
+                firstname=person_schema.firstname,
+                lastname=person_schema.lastname,
+                iin=person_schema.iin,
+                doc_number=person_schema.doc_number,
+                birth_date=person_schema.birth_date
+        ):
             full_name_for_log = f"{person_schema.firstname} {person_schema.lastname}"
-            create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0, # entity_id might be better as None or a specific code
+            create_audit_log(db, actor_id=creator.id, entity="request_creation_attempt", entity_id=0,
                              action="CREATE_FAIL_BLACKLISTED",
-                             data={"message": f"Attempt to create request with blacklisted person: {full_name_for_log}"})
+                             data={
+                                 "message": f"Попытка создать заявку с человеком из чёрного списка: {full_name_for_log}"})
             raise BlacklistedPersonException(f"{person_schema.firstname} {person_schema.lastname}")
 
-    # 2. Creator Permission Checks
+    # 2. Проверка прав на создание заявок
     if not creator.role or not creator.department:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role or department not defined.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Роль или подразделение пользователя не определены.")
 
     is_admin = rbac.is_admin(creator)
     is_nach_departamenta = rbac.is_nach_departamenta(creator)
     is_nach_upravleniya = rbac.is_nach_upravleniya(creator)
 
-    can_create_request_type = False
+    # Проверка типа заявки и прав
     if request_in.duration == RequestDuration.LONG_TERM:
-        if is_nach_departamenta or is_admin:
-            can_create_request_type = True
-        else:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Department Heads or Admin can create long-term requests.")
+        if not (is_nach_departamenta or is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Только начальники департаментов или администраторы могут создавать долгосрочные заявки."
+            )
     elif request_in.duration == RequestDuration.SHORT_TERM:
-        # Assuming Nach Departamenta can also create short-term as they are higher/equivalent to Nach Upravleniya in some structures
-        if is_nach_upravleniya or is_nach_departamenta or is_admin:
-            can_create_request_type = True
-        else:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Unit/Division/Department Heads or Admin can create short-term requests.")
+        if not (is_nach_upravleniya or is_nach_departamenta or is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Только начальники управлений, департаментов или администраторы могут создавать краткосрочные заявки."
+            )
     else:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request duration specified.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный тип заявки.")
 
-    # The status will be DRAFT by default from schemas.RequestCreate.
-    # Actual routing to PENDING_USB/AS will happen in submit_request.
-
-    # 3. Create Request and RequestPerson objects
-
-    # 1. Собираем объекты-модели Checkpoint по списку id
+    # 3. Создание заявки и персон
     if not request_in.checkpoint_ids:
-        raise HTTPException(400, "Нужно хотя бы 1 checkpoint_id")
+        raise HTTPException(400, "Необходимо указать хотя бы один КПП")
+
     checkpoints = (
         db.query(models.Checkpoint)
         .filter(models.Checkpoint.id.in_(request_in.checkpoint_ids))
         .all()
     )
     if len(checkpoints) != len(request_in.checkpoint_ids):
-        raise HTTPException(404, "Некоторые checkpoints не найдены")
+        raise HTTPException(404, "Некоторые КПП не найдены")
 
     db_request = models.Request(
         creator_id=creator.id,
@@ -384,31 +383,23 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
         arrival_purpose=request_in.arrival_purpose,
         accompanying=request_in.accompanying,
         contacts_of_accompanying=request_in.contacts_of_accompanying,
-        duration=request_in.duration.value,  # если duration тоже enum-поле
+        duration=request_in.duration.value,
     )
-    db_request.checkpoints = checkpoints # <— вот тут связываем many-to-many
+    db_request.checkpoints = checkpoints
     db.add(db_request)
-    db.commit() # Commit to get db_request.id for RequestPersons
+    db.commit()
 
     for person_schema in request_in.request_persons:
         person_model = models.RequestPerson(**person_schema.model_dump(), request_id=db_request.id)
         db.add(person_model)
-    db.commit() # Commit all new persons
+    db.commit()
     db.flush()
-    db.refresh(db_request) # Refresh to get all relationships, including request_persons
+    db.refresh(db_request)
 
-    # 4. Audit Log
+    # 4. Журнал действий
     create_audit_log(db, actor_id=creator.id, entity="request", entity_id=db_request.id,
-                     action="CREATE", data={"status": db_request.status, "num_persons": len(db_request.request_persons)})
-
-    # 5. Notification (Placeholder - actual user lookup for roles needed)
-    # Example: notify DCS officers. This needs a way to find users by role.
-    # dcs_officers = db.query(models.User).join(models.Role).filter(models.Role.code == constants.DCS_OFFICER_ROLE_CODE).all()
-    # for officer in dcs_officers:
-    #    create_notification(db, user_id=officer.id, message=f"New request {db_request.id} pending your review.", request_id=db_request.id)
-    # zd_deputy_heads = db.query(models.User).join(models.Role).filter(models.Role.code == constants.ZD_DEPUTY_HEAD_ROLE_CODE).all()
-    # for zd_head in zd_deputy_heads:
-    #    create_notification(db, user_id=zd_head.id, message=f"New request {db_request.id} created, will require ZD approval if DCS approves.", request_id=db_request.id)
+                     action="CREATE",
+                     data={"status": db_request.status, "num_persons": len(db_request.request_persons)})
 
     return db_request
 
@@ -607,6 +598,13 @@ def update_request_draft(db: Session, request_id: int, request_update: schemas.R
 
 
 def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+    """
+    Подача заявки на одобрение. Маршрутизация согласно новым правилам:
+    - Долгосрочные заявки -> УСБ
+    - Краткосрочные заявки с > 3 человек -> УСБ
+    - Заявки с иностранными гражданами -> УСБ
+    - Краткосрочные заявки с <= 3 человек (только граждане КЗ) -> АС
+    """
     from fastapi import status as fastapi_status
     db_request = get_request(db, request_id=request_id, user=user)
     if not db_request:
@@ -614,51 +612,66 @@ def submit_request(db: Session, request_id: int, user: models.User) -> models.Re
 
     from . import rbac
     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
-        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="Not authorized to submit this request.")
+        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN,
+                            detail="Not authorized to submit this request.")
 
     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
         raise InvalidRequestStateException(db_request.status, "DRAFT")
 
-    # Determine initial status based on new rules
+    # Проверка наличия иностранных граждан
     contains_foreign_citizen = any(
         p.nationality == models.NationalityType.FOREIGN for p in db_request.request_persons
     )
 
-    if db_request.duration == RequestDuration.LONG_TERM or \
-       len(db_request.request_persons) > 3 or \
-       contains_foreign_citizen:
+    # Определение маршрута согласно новым правилам
+    if (db_request.duration == RequestDuration.LONG_TERM or
+            len(db_request.request_persons) > 3 or
+            contains_foreign_citizen):
+        # Долгосрочные, больше 3 человек или есть иностранцы -> УСБ
         db_request.status = schemas.RequestStatusEnum.PENDING_USB.value
-    else: # Short-term, <=3 persons, all KZ citizens (implicitly, as foreign check is done)
+    else:
+        # Краткосрочные, <= 3 человек, все граждане КЗ -> АС
         db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
 
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
-    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id, action="SUBMIT", data={"new_status": db_request.status})
 
-    # TODO: Notifications to DCS Officers and ZD Deputy Head (from plan)
-    # dcs_users = db.query(models.User).join(models.Role).filter(models.Role.code == DCS_OFFICER_ROLE_CODE).all()
-    # for dcs_user_notify in dcs_users:
-    #     create_notification(db, user_id=dcs_user_notify.id, message=f"Request {db_request.id} submitted for DCS review.", request_id=db_request.id)
-    # Similar for ZD if needed at this stage.
+    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id,
+                     action="SUBMIT", data={"new_status": db_request.status})
+
+    # TODO: Уведомления для УСБ или АС в зависимости от маршрута
+    # if db_request.status == schemas.RequestStatusEnum.PENDING_USB.value:
+    #     usb_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.USB_ROLE_CODE).all()
+    #     for usb_user in usb_users:
+    #         create_notification(db, user_id=usb_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
+    # elif db_request.status == schemas.RequestStatusEnum.PENDING_AS.value:
+    #     as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
+    #     for as_user in as_users:
+    #         create_notification(db, user_id=as_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
+
     return db_request
 
 # --- USB Workflow Functions ---
 def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> models.Request:
-    db_request = get_request(db, request_id=request_id, user=usb_user) # RBAC check for visibility
+    """
+    Одобрение заявки пользователем с ролью УСБ.
+    После одобрения УСБ заявка переходит к АС.
+    """
+    db_request = get_request(db, request_id=request_id, user=usb_user)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
 
     if db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
         raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_USB.value)
 
-    # Update main request status
+    # Обновление статуса заявки
     db_request.status = schemas.RequestStatusEnum.APPROVED_USB.value
-    # Immediately move to next stage if USB approves (unless there's an intermediate USB_APPROVED state needed for something else)
-    # Based on "заявки которые одобрила роль УСБ попадают к юзеру с ролью АС"
+
+    # Сразу переводим на следующий этап - к АС
     db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
 
-    # Cascade approval to all persons
+    # Каскадное одобрение всех персон в заявке
     for person in db_request.request_persons:
         person.status = models.RequestPersonStatus.APPROVED
         person.rejection_reason = None
@@ -667,9 +680,15 @@ def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> 
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
+
     create_audit_log(db, actor_id=usb_user.id, entity="request", entity_id=db_request.id,
                      action="USB_APPROVE_ALL", data={"new_status": db_request.status})
-    # TODO: Notify AS users that a request is pending their approval.
+
+    # TODO: Уведомить пользователей с ролью АС
+    as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
+    for as_user in as_users:
+        create_notification(db, user_id=as_user.id, message=f"Заявка {db_request.id} одобрена УСБ и ожидает вашего рассмотрения.", request_id=db_request.id)
+
     return db_request
 
 def decline_request_usb(db: Session, request_id: int, usb_user: models.User, reason: str) -> models.Request:
@@ -713,31 +732,50 @@ def decline_request_usb(db: Session, request_id: int, usb_user: models.User, rea
 
 # --- AS Workflow Functions ---
 def approve_request_as(db: Session, request_id: int, as_user: models.User) -> models.Request:
-    db_request = get_request(db, request_id=request_id, user=as_user) # RBAC check for visibility
+    """
+    Одобрение заявки пользователем с ролью АС.
+    Это финальное одобрение, после которого заявка становится доступна для КПП.
+    """
+    db_request = get_request(db, request_id=request_id, user=as_user)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
 
-    # AS can approve requests that are PENDING_AS (either directly routed or after USB approval)
+    # АС может одобрять заявки в статусе PENDING_AS (прямые или после УСБ)
     if db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
         raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_AS.value)
 
-    db_request.status = schemas.RequestStatusEnum.APPROVED_AS.value # This is the final approval state before KPP
-    # Consider if APPROVED_AS should automatically become ISSUED, or if ISSUED is a separate step.
-    # For now, APPROVED_AS is the trigger for KPP visibility.
+    # Финальное одобрение
+    db_request.status = schemas.RequestStatusEnum.APPROVED_AS.value
 
-    # Cascade approval to persons who are not already explicitly REJECTED.
+    # Каскадное одобрение всех персон, которые ещё не отклонены
     for person in db_request.request_persons:
         if person.status != models.RequestPersonStatus.REJECTED:
             person.status = models.RequestPersonStatus.APPROVED
-            person.rejection_reason = None # Clear reason if it was pending and somehow had one
+            person.rejection_reason = None
             db.add(person)
 
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
+
     create_audit_log(db, actor_id=as_user.id, entity="request", entity_id=db_request.id,
                      action="AS_APPROVE_ALL", data={"new_status": db_request.status})
-    # TODO: Notify creator and KPP operators.
+
+    # TODO: Уведомить создателя заявки и операторов КПП
+    # Уведомить создателя
+    create_notification(db, user_id=db_request.creator_id,
+                       message=f"Ваша заявка {db_request.id} полностью одобрена и готова к использованию.",
+                       request_id=db_request.id)
+
+    # Уведомить КПП
+    for checkpoint in db_request.checkpoints:
+        kpp_role_code = f"{constants.KPP_ROLE_PREFIX}{checkpoint.id}"
+        kpp_users = db.query(models.User).join(models.Role).filter(models.Role.code == kpp_role_code).all()
+        for kpp_user in kpp_users:
+            create_notification(db, user_id=kpp_user.id,
+                               message=f"Новая одобренная заявка {db_request.id} для КПП {checkpoint.name}.",
+                               request_id=db_request.id)
+
     return db_request
 
 def decline_request_as(db: Session, request_id: int, as_user: models.User, reason: str) -> models.Request:
@@ -1251,3 +1289,61 @@ def update_visit_log(db: Session, visit_log_id: int, visit_log_update: schemas.V
             db.commit()
             db.refresh(db_visit_log)
     return db_visit_log
+
+
+def cleanup_old_visit_logs(db: Session, retention_months: int = 18) -> int:
+    """
+    Удаляет старые записи журнала посещений.
+
+    Args:
+        db: Сессия базы данных
+        retention_months: Количество месяцев для хранения (по умолчанию 18)
+
+    Returns:
+        Количество удалённых записей
+    """
+    cutoff_date = datetime.utcnow() - timedelta(days=retention_months * 30)
+
+    # Подсчёт записей для удаления
+    count = db.query(models.VisitLog).filter(
+        models.VisitLog.check_in_time < cutoff_date
+    ).count()
+
+    # Удаление старых записей
+    db.query(models.VisitLog).filter(
+        models.VisitLog.check_in_time < cutoff_date
+    ).delete(synchronize_session=False)
+
+    db.commit()
+
+    # Создание записи в журнале действий
+    create_audit_log(
+        db,
+        actor_id=None,  # Системное действие
+        entity="visit_logs",
+        entity_id=0,
+        action="CLEANUP",
+        data={
+            "deleted_count": count,
+            "cutoff_date": cutoff_date.isoformat(),
+            "retention_months": retention_months
+        }
+    )
+
+    return count
+
+
+def cleanup_old_audit_logs(db: Session, retention_months: int = 18) -> int:
+    """
+    Удаляет старые записи журнала действий.
+
+    Args:
+        db: Сессия базы данных
+        retention_months: Количество месяцев для хранения (по умолчанию 18)
+
+    Returns:
+        Количество удалённых записей
+    """
+    cutoff_date = datetime.utcnow() - timedelta(days=retention_months * 30)
+
+    # Подсчёт записей для

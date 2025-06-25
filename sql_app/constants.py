@@ -1,52 +1,57 @@
 # Role Codes
-# TODO: Ensure these codes match exactly with the 'code' field in the 'roles' table in the database.
+# Константы ролей в соответствии с требованиями
 
 # Administrative & High-Level Roles
 ADMIN_ROLE_CODE = "admin"
-# KPP_ROLE_CODE = "KPP_" # Old, replaced by KPP_ROLE_PREFIX
 
-# Approval & Security Roles (New based on requirements)
-USB_ROLE_CODE = "usb_officer"
-AS_ROLE_CODE = "as_officer"
+# Управленческие роли (создание заявок)
+NACH_UPRAVLENIYA_ROLE_CODE = "nach_upravleniya"  # Начальник управления - краткосрочные заявки
+NACH_DEPARTAMENTA_ROLE_CODE = "nach_departamenta"  # Начальник департамента - долгосрочные заявки
 
-# Deprecated/Replaced Approval Roles (if USB/AS replace them)
-DCS_OFFICER_ROLE_CODE = "dcs_officer"  # Potentially replaced by USB_ROLE_CODE
-ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head" # Potentially replaced by AS_ROLE_CODE
+# Роли одобрения
+USB_ROLE_CODE = "usb"  # УСБ - первичное одобрение
+AS_ROLE_CODE = "as"    # АС - вторичное одобрение
 
-SECURITY_OFFICER_ROLE_CODE = "security_officer" # General security officer, may still be used or combined with USB/AS functions
+# Роли КПП
+KPP_ROLE_PREFIX = "KPP-"  # Префикс для ролей КПП (КПП-1, КПП-2, КПП-3, КПП-4)
 
-# Management Roles
-# "Начальник департамента"
-NACH_DEPARTAMENTA_ROLE_CODE = "head_of_department" # This can replace/be the same as DEPARTMENT_HEAD_ROLE_CODE
-# "Начальник управления" - 'управление' can be a 'DIVISION' or 'UNIT' type in Department model
-NACH_UPRAVLENIYA_ROLE_CODE = "head_of_management_unit" # Generic term, specific type (Division/Unit) checked in logic
+# Вспомогательные роли (если нужны)
+EMPLOYEE_ROLE_CODE = "employee"  # Обычный сотрудник
 
-# Existing granular management roles (can be used by NACH_DEPARTAMENTA_ROLE_CODE or NACH_UPRAVLENIYA_ROLE_CODE if they are assigned to a dept of this type)
-DEPARTMENT_HEAD_ROLE_CODE = "department_head" # Kept for now, might consolidate with NACH_DEPARTAMENTA
+# Deprecated roles (для обратной совместимости, если есть старые данные)
+SECURITY_OFFICER_ROLE_CODE = "security_officer"  # Старая роль, заменена на USB/AS
+DCS_OFFICER_ROLE_CODE = "dcs_officer"  # Deprecated
+ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head"  # Deprecated
+
+# Для обратной совместимости с существующим кодом
+DEPARTMENT_HEAD_ROLE_CODE = NACH_DEPARTAMENTA_ROLE_CODE
+DIVISION_MANAGER_ROLE_CODE = NACH_UPRAVLENIYA_ROLE_CODE
+UNIT_HEAD_ROLE_CODE = "unit_head"  # Начальник отдела (если потребуется)
 DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
-DIVISION_MANAGER_ROLE_CODE = "division_manager" # Manager of a 'DIVISION' type department
 DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-UNIT_HEAD_ROLE_CODE = "unit_head" # Manager of a 'UNIT' type department
 DEPUTY_UNIT_HEAD_ROLE_CODE = "deputy_unit_head"
+CHECKPOINT_OPERATOR_ROLE_PREFIX = "checkpoint_operator_cp"  # Старый префикс для операторов КПП
 
-# Operational Roles
-CHECKPOINT_OPERATOR_ROLE_PREFIX = "checkpoint_operator_cp" # e.g., checkpoint_operator_cp1. This is for specific checkpoint hardware/software.
-                                                            # KPP_ROLE_CODE is for the human personnel at these checkpoints.
-                                                            # The problem states "КПП-*" sees requests. This implies KPP_ROLE_CODE might be like "KPP-1", "KPP-2".
-                                                            # Let's adjust KPP_ROLE_CODE to be a prefix.
-KPP_ROLE_PREFIX = "KPP-" # e.g. KPP-1, KPP-2. (Replaces single KPP_ROLE_CODE)
+# Department Types (типы подразделений в структуре организации)
+# Организация->Департамент->Управление->Отдел->Сотрудники
+COMPANY = "COMPANY"  # Организация
+DEPARTMENT = "DEPARTMENT"  # Департамент
+DIVISION = "DIVISION"  # Управление (в терминологии кода это division)
+UNIT = "UNIT"  # Отдел
 
-# General User Roles
-EMPLOYEE_ROLE_CODE = "employee" # Generic employee
+# Request Statuses - статусы заявок
+DRAFT = "DRAFT"  # Черновик
+PENDING_USB = "PENDING_USB"  # Ожидает одобрения УСБ
+APPROVED_USB = "APPROVED_USB"  # Одобрено УСБ
+DECLINED_USB = "DECLINED_USB"  # Отклонено УСБ
+PENDING_AS = "PENDING_AS"  # Ожидает одобрения АС
+APPROVED_AS = "APPROVED_AS"  # Одобрено АС (финальное одобрение)
+DECLINED_AS = "DECLINED_AS"  # Отклонено АС
+ISSUED = "ISSUED"  # Пропуск выдан
+CLOSED = "CLOSED"  # Заявка закрыта
 
-# Add other role codes as they are defined and used.
+# Checkpoint codes - коды КПП
+CHECKPOINTS = ["KPP-1", "KPP-2", "KPP-3", "KPP-4"]
 
-# Request Statuses (already in schemas.RequestStatusEnum, but if needed as constants elsewhere)
-# PENDING_DCS = "PENDING_DCS"
-# ... etc.
-
-# Department Types (from models.DepartmentType)
-# COMPANY = "COMPANY"
-# DEPARTMENT = "DEPARTMENT"
-# DIVISION = "DIVISION"
-# UNIT = "UNIT"
+# Audit log retention period (months)
+AUDIT_LOG_RETENTION_MONTHS = 18

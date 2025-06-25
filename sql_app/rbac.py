@@ -22,19 +22,6 @@ def is_usb_officer(user: models.User) -> bool: # Renamed from is_usb for consist
 def is_as_officer(user: models.User) -> bool: # Renamed from is_as for consistency
     return user.role and user.role.code == constants.AS_ROLE_CODE
 
-def is_nach_departamenta(user: models.User) -> bool:
-    return user.role and user.role.code == constants.DEPARTMENT_HEAD_ROLE_CODE and \
-           user.department and user.department.type == models.DepartmentType.DEPARTMENT
-
-def is_nach_upravleniya(user: models.User) -> bool:
-    if not user.role or not user.department:
-        return False
-    is_head_of_division = (user.role.code == constants.DIVISION_MANAGER_ROLE_CODE and
-                           user.department.type == models.DepartmentType.DIVISION)
-    is_head_of_unit = (user.role.code == constants.UNIT_HEAD_ROLE_CODE and
-                       user.department.type == models.DepartmentType.UNIT)
-    return is_head_of_division or is_head_of_unit
-
 def get_kpp_checkpoint_id_from_user(user: models.User) -> Optional[int]:
     """Extracts checkpoint ID from KPP user's role code (e.g., KPP-1 -> 1)."""
     if user.role and user.role.code and user.role.code.startswith(constants.KPP_ROLE_PREFIX):
@@ -44,20 +31,6 @@ def get_kpp_checkpoint_id_from_user(user: models.User) -> Optional[int]:
             return None # Role code suffix is not a valid integer
     return None # Not a KPP role or role code is malformed
 
-# --- RBAC Functions for Visit Log Viewing ---
-
-def can_view_all_visit_logs(user: models.User) -> bool:
-    """
-    Checks if the user has a role that grants access to all visit logs.
-    (DCS Officer, Admin, ZD Deputy Head)
-    """
-    if not user.role:
-        return False
-    return user.role.code in [
-        constants.USB_ROLE_CODE, # Updated from DCS
-        constants.AS_ROLE_CODE,  # Updated from ZD
-        constants.ADMIN_ROLE_CODE
-    ]
 
 def get_allowed_creator_department_ids_for_visit_logs(db: Session, user: models.User) -> Optional[List[int]]:
     """
@@ -247,96 +220,6 @@ def can_user_view_request(
     # Fallback: if none of the above, deny access
     return False
 
-# Visibility for listing requests (to be used in crud.get_requests query building)
-# These functions help determine query filters rather than a boolean for a single item.
-# So, this might be structured differently, e.g. returning a filter object or modifying the query directly.
-
-def get_request_visibility_filters_for_user(db: Session, user: models.User) -> dict:
-    """
-    Determines the base filters for listing requests based on user role.
-    Returns a dict of filters to be applied by CRUD:
-    {
-        "creator_id": user.id (optional),
-        "department_ids": [id1, id2,...] (user's dept and its children - for dept heads),
-        "exact_department_id": user.department_id (for division managers),
-        "target_statuses": [status1, status2,...] (e.g. for CPs)
-        "is_unrestricted": True (for admin, DCS, ZD - see all)
-    }
-    """
-    filters = {"is_unrestricted": False}
-    if not user.role: # No role, most restricted view (e.g., only own if that's a fallback)
-        filters["creator_id"] = user.id
-        return filters
-
-    role_code = user.role.code
-
-    if role_code in [
-        constants.ADMIN_ROLE_CODE,
-        constants.USB_ROLE_CODE, # Updated
-        constants.AS_ROLE_CODE   # Updated
-        # constants.DCS_OFFICER_ROLE_CODE, # Deprecated
-        # constants.ZD_DEPUTY_HEAD_ROLE_CODE # Deprecated
-    ]:
-        filters["is_unrestricted"] = True
-    elif role_code in [constants.DEPARTMENT_HEAD_ROLE_CODE, constants.DEPUTY_DEPARTMENT_HEAD_ROLE_CODE, constants.UNIT_HEAD_ROLE_CODE, constants.DEPUTY_UNIT_HEAD_ROLE_CODE]:
-        if user.department_id:
-            # For unit heads, this will correctly give their specific unit's ID if units don't have children.
-            # If units can have children and unit heads should see them, get_department_descendant_ids will handle it.
-            filters["department_ids"] = crud.get_department_descendant_ids(db, user.department_id)
-        else:
-            filters["department_ids"] = []
-    elif role_code in [constants.DIVISION_MANAGER_ROLE_CODE, constants.DEPUTY_DIVISION_MANAGER_ROLE_CODE]:
-        if user.department_id and user.department and user.department.type == models.DepartmentType.DIVISION:
-            # Division managers see requests from creators within their entire division,
-            # so we need all department IDs under this division.
-            filters["department_ids"] = crud.get_department_descendant_ids(db, user.department_id)
-            # filters["exact_department_id"] = user.department_id # Old logic, changed to department_ids
-        else:
-            filters["department_ids"] = []
-    elif role_code.startswith(constants.KPP_ROLE_PREFIX): # Changed to KPP_ROLE_PREFIX
-        kpp_checkpoint_id = get_kpp_checkpoint_id_from_user(user)
-        if kpp_checkpoint_id is not None:
-            filters["checkpoint_id"] = kpp_checkpoint_id
-            filters["target_statuses"] = [
-                schemas.RequestStatusEnum.APPROVED_AS.value, # New final approval status
-                # schemas.RequestStatusEnum.ISSUED.value, # If ISSUED is still separate and relevant for KPP
-            ]
-        else: # Invalid KPP role format
-            filters["checkpoint_id"] = -1
-    elif role_code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX): # Existing specific checkpoint operator
-        suffix = role_code[len(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):]
-        try:
-            cp_id = int(suffix)
-            filters["checkpoint_id"] = cp_id
-            filters["target_statuses"] = [ # These might be technical operators seeing different states
-                schemas.RequestStatusEnum.APPROVED_AS.value,
-                schemas.RequestStatusEnum.ISSUED.value, # Retaining ISSUED for them if it's distinct
-            ]
-        except ValueError:
-            filters["checkpoint_id"] = -1
-
-    # Fallback for other roles (e.g. EMPLOYEE_ROLE_CODE or any unhandled manager role)
-    else:
-        filters["creator_id"] = user.id
-
-    return filters
-
-
-# --- RBAC Functions for Audit Log Viewing ---
-
-def can_view_all_audit_logs(user: models.User) -> bool:
-    """
-    Checks if the user has a role that grants access to all audit logs.
-    (e.g., Admin, USB, AS).
-    """
-    if not user.role:
-        return False
-    return user.role.code in [
-        constants.ADMIN_ROLE_CODE,
-        constants.USB_ROLE_CODE,
-        constants.AS_ROLE_CODE
-        # Add other roles if they should see all audit logs
-    ]
 
 def get_allowed_actor_department_ids_for_audit_logs(db: Session, user: models.User) -> Optional[List[int]]:
     """
@@ -371,3 +254,117 @@ def get_allowed_actor_department_ids_for_audit_logs(db: Session, user: models.Us
         return crud.get_department_descendant_ids(db, user_dept_id)
 
     return [] # Default for other roles: no department-specific view unless they can see all.
+
+
+def is_nach_upravleniya(user: models.User) -> bool:
+    """Проверка, является ли пользователь начальником управления"""
+    return user.role and user.role.code == constants.NACH_UPRAVLENIYA_ROLE_CODE
+
+
+def is_nach_departamenta(user: models.User) -> bool:
+    """Проверка, является ли пользователь начальником департамента"""
+    return user.role and user.role.code == constants.NACH_DEPARTAMENTA_ROLE_CODE
+
+
+def is_usb(user: models.User) -> bool:
+    """Проверка, является ли пользователь УСБ"""
+    return user.role and user.role.code == constants.USB_ROLE_CODE
+
+
+def is_as(user: models.User) -> bool:
+    """Проверка, является ли пользователь АС"""
+    return user.role and user.role.code == constants.AS_ROLE_CODE
+
+
+def is_kpp(user: models.User) -> bool:
+    """Проверка, является ли пользователь оператором КПП"""
+    return user.role and user.role.code and user.role.code.startswith(constants.KPP_ROLE_PREFIX)
+
+
+def get_kpp_number(user: models.User) -> Optional[int]:
+    """Получить номер КПП из роли пользователя (например, из КПП-1 вернёт 1)"""
+    if user.role and user.role.code and user.role.code.startswith(constants.KPP_ROLE_PREFIX):
+        try:
+            return int(user.role.code[len(constants.KPP_ROLE_PREFIX):])
+        except ValueError:
+            return None
+    return None
+
+
+# Обновите функцию can_view_all_visit_logs:
+def can_view_all_visit_logs(user: models.User) -> bool:
+    """
+    Проверяет, может ли пользователь видеть весь журнал посещений.
+    УСБ, АС и Админ видят всё.
+    """
+    if not user.role:
+        return False
+    return user.role.code in [
+        constants.USB_ROLE_CODE,
+        constants.AS_ROLE_CODE,
+        constants.ADMIN_ROLE_CODE
+    ]
+
+
+# Обновите функцию can_view_all_audit_logs:
+def can_view_all_audit_logs(user: models.User) -> bool:
+    """
+    Проверяет, может ли пользователь видеть все журналы действий.
+    УСБ, АС и Админ видят всё.
+    """
+    if not user.role:
+        return False
+    return user.role.code in [
+        constants.ADMIN_ROLE_CODE,
+        constants.USB_ROLE_CODE,
+        constants.AS_ROLE_CODE
+    ]
+
+
+# Обновите функцию get_request_visibility_filters_for_user:
+def get_request_visibility_filters_for_user(db: Session, user: models.User) -> dict:
+    """
+    Определяет фильтры видимости заявок для пользователя согласно новым требованиям.
+    """
+    filters = {"is_unrestricted": False}
+    if not user.role:
+        filters["creator_id"] = user.id
+        return filters
+
+    role_code = user.role.code
+
+    # УСБ, АС и Админ видят все заявки
+    if role_code in [constants.ADMIN_ROLE_CODE, constants.USB_ROLE_CODE, constants.AS_ROLE_CODE]:
+        filters["is_unrestricted"] = True
+
+    # Начальники департаментов видят заявки своего департамента и подчинённых подразделений
+    elif role_code == constants.NACH_DEPARTAMENTA_ROLE_CODE:
+        if user.department_id:
+            filters["department_ids"] = crud.get_department_descendant_ids(db, user.department_id)
+        else:
+            filters["department_ids"] = []
+
+    # Начальники управлений видят заявки своего управления и подчинённых подразделений
+    elif role_code == constants.NACH_UPRAVLENIYA_ROLE_CODE:
+        if user.department_id:
+            filters["department_ids"] = crud.get_department_descendant_ids(db, user.department_id)
+        else:
+            filters["department_ids"] = []
+
+    # КПП видят только одобренные заявки для своего КПП
+    elif role_code.startswith(constants.KPP_ROLE_PREFIX):
+        kpp_number = get_kpp_number(user)
+        if kpp_number is not None:
+            filters["checkpoint_id"] = kpp_number
+            filters["target_statuses"] = [
+                schemas.RequestStatusEnum.APPROVED_AS.value,
+                schemas.RequestStatusEnum.ISSUED.value
+            ]
+        else:
+            filters["checkpoint_id"] = -1  # Невалидный ID
+
+    # Обычные сотрудники видят только свои заявки
+    else:
+        filters["creator_id"] = user.id
+
+    return filters

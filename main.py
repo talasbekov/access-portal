@@ -14,7 +14,8 @@ from sql_app.routers import (
     blacklist,
     checkpoints,
     visits,
-    audit_logs # Added new router
+    audit_logs, # Added new router
+    admin
 )
 
 # Настройка логирования
@@ -72,6 +73,7 @@ app.include_router(blacklist.router)
 app.include_router(checkpoints.router)
 app.include_router(visits.router)
 app.include_router(audit_logs.router) # Added new router
+app.include_router(admin.router)
 
 
 @app.get("/")

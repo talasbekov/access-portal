@@ -135,27 +135,41 @@ class AuthDependencies:
         return current_user
 
     @staticmethod
-    def get_nach_departamenta_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
-        """Требовать роль Начальника Департамента"""
-        if not (current_user.role and current_user.role.code == constants.DEPARTMENT_HEAD_ROLE_CODE and
-                current_user.department and current_user.department.type == models.DepartmentType.DEPARTMENT):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Department Head privileges required for a department.")
+    def get_nach_upravleniya_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль Начальника Управления"""
+        if not current_user.role or current_user.role.code != constants.NACH_UPRAVLENIYA_ROLE_CODE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Требуются права начальника управления"
+            )
         return current_user
 
     @staticmethod
-    def get_nach_upravleniya_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
-        """Требовать роль Начальника Управления (Division or Unit)"""
-        if not current_user.role or not current_user.department:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role or department not defined.")
-
-        is_head_of_division = (current_user.role.code == constants.DIVISION_MANAGER_ROLE_CODE and
-                               current_user.department.type == models.DepartmentType.DIVISION)
-        is_head_of_unit = (current_user.role.code == constants.UNIT_HEAD_ROLE_CODE and
-                           current_user.department.type == models.DepartmentType.UNIT)
-
-        if not (is_head_of_division or is_head_of_unit):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Head of Management Unit (Division or Unit) privileges required.")
+    def get_nach_departamenta_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль Начальника Департамента"""
+        if not current_user.role or current_user.role.code != constants.NACH_DEPARTAMENTA_ROLE_CODE:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Требуются права начальника департамента"
+            )
         return current_user
+
+    @staticmethod
+    def get_request_creator_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
+        """Требовать роль для создания заявок (начальник управления или департамента)"""
+        if not current_user.role or current_user.role.code not in [
+            constants.NACH_UPRAVLENIYA_ROLE_CODE,
+            constants.NACH_DEPARTAMENTA_ROLE_CODE,
+            constants.ADMIN_ROLE_CODE
+        ]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Требуются права для создания заявок"
+            )
+        return current_user
+
+    # Добавьте экспорт в конец файла:
+
 
 # Создаем экземпляры для легкого импорта
 get_current_user = AuthDependencies.get_current_user
@@ -166,5 +180,6 @@ get_checkpoint_operator_user = AuthDependencies.get_checkpoint_operator_user
 get_kpp_user = AuthDependencies.get_kpp_user
 get_usb_user = AuthDependencies.get_usb_user
 get_as_user = AuthDependencies.get_as_user
-get_nach_departamenta_user = AuthDependencies.get_nach_departamenta_user
 get_nach_upravleniya_user = AuthDependencies.get_nach_upravleniya_user
+get_nach_departamenta_user = AuthDependencies.get_nach_departamenta_user
+get_request_creator_user = AuthDependencies.get_request_creator_user
