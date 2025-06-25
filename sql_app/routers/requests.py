@@ -244,61 +244,6 @@ async def read_single_request(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
     return db_request
 
-# ------------- DCS Approval/Declination Endpoints -------------
-
-@router.post("/{request_id}/dcs_action", response_model=schemas.Request, tags=["Approvals"])
-async def dcs_action_on_request(
-    request_id: int,
-    action: schemas.ApprovalStatusEnum,
-    payload: schemas.ApprovalCommentPayload,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
-):
-    # Business logic (role check, status check, approval/decline, audit, notifications)
-    # is now in crud.approve_request_step or crud.decline_request_step.
-    try:
-        if action == schemas.ApprovalStatusEnum.APPROVED:
-            updated_request = crud.approve_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
-        elif action == schemas.ApprovalStatusEnum.DECLINED:
-            updated_request = crud.decline_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action specified.")
-        return updated_request
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"Unexpected error in dcs_action_on_request: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
-
-
-# ------------- ZD Deputy Head Approval/Declination Endpoints -------------
-
-@router.post("/{request_id}/zd_action", response_model=schemas.Request, tags=["Approvals"])
-async def zd_action_on_request(
-    request_id: int,
-    action: schemas.ApprovalStatusEnum,
-    payload: schemas.ApprovalCommentPayload,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
-):
-    # Business logic is now in crud.approve_request_step or crud.decline_request_step.
-    # The CRUD functions will internally check if the user (approver) has the correct role (ZD)
-    # and if the request is in the correct state for ZD action.
-    try:
-        if action == schemas.ApprovalStatusEnum.APPROVED:
-            updated_request = crud.approve_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
-        elif action == schemas.ApprovalStatusEnum.DECLINED:
-            updated_request = crud.decline_request_step(db=db, request_id=request_id, approver=current_user, comment=payload.comment)
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action specified.")
-        return updated_request
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"Unexpected error in zd_action_on_request: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
-
-
 # ------------- Visit Log Endpoints for a Request -------------
 
 @router.post("/{request_id}/visits", response_model=schemas.VisitLog, status_code=status.HTTP_201_CREATED, tags=["Visit Logs"])
@@ -317,7 +262,7 @@ async def create_visit_log_for_request(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role not defined.")
 
     is_admin = current_user.role.code == ADMIN_ROLE_CODE
-    is_checkpoint_operator = current_user.role.code and current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX)
+    is_checkpoint_operator = current_user.role.code and current_user.role.code.startswith(KPP_ROLE_PREFIX)
 
     if not (is_admin or is_checkpoint_operator):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to create visit logs.")
@@ -404,11 +349,11 @@ async def read_visit_logs_for_request(
     # Check for checkpoint operator role - this was part of the original simpler check for this endpoint.
     # This specific permission might need to be refined based on whether CP operators should see *all* logs for a request they handle,
     # or only specific entries they create/manage. For now, retaining similar broad access for CP ops on this request's logs.
-    if not allowed and current_user.role and current_user.role.code and current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+    if not allowed and current_user.role and current_user.role.code and current_user.role.code.startswith(KPP_ROLE_PREFIX):
         # Further check: is this request associated with this checkpoint operator's checkpoint(s)?
         # This requires knowing the operator's specific checkpoint. For now, if they are any CP operator, allow.
         # A more robust check would be:
-        # operator_cp_id_str = current_user.role.code[len(CHECKPOINT_OPERATOR_ROLE_PREFIX):]
+        # operator_cp_id_str = current_user.role.code[len(KPP_ROLE_PREFIX):]
         # try:
         #     operator_cp_id = int(operator_cp_id_str)
         #     if any(cp.id == operator_cp_id for cp in db_request.checkpoints):

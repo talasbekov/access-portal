@@ -33,7 +33,7 @@ def check_permission(current_user: models.User):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role not defined.")
 
     is_admin = current_user.role.code == constants.ADMIN_ROLE_CODE
-    is_checkpoint_operator = current_user.role.code and current_user.role.code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX)
+    is_checkpoint_operator = current_user.role.code and current_user.role.code.startswith(constants.KPP_ROLE_PREFIX)
 
     if not (is_admin or is_checkpoint_operator):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage visit logs.")

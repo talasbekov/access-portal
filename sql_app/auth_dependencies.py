@@ -103,7 +103,7 @@ class AuthDependencies:
         current_user: models.User = Depends(get_current_active_user)  # Правильная зависимость
     ) -> models.User:
         """Требовать роль оператора КПП"""
-        if not current_user.role or not current_user.role.code.startswith(constants.CHECKPOINT_OPERATOR_ROLE_PREFIX):
+        if not current_user.role or not current_user.role.code.startswith(constants.KPP_ROLE_PREFIX):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Checkpoint operator privileges required"

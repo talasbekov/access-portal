@@ -6,20 +6,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from sql_app import main, schemas, models # main for app, schemas for payloads, models for DB objects
+from sql_app.constants import KPP_ROLE_PREFIX
 from sql_app.dependencies import get_db # To override
 # Assuming auth dependency is like requests.py:
 from sql_app.routers.requests import get_current_active_user_for_req_router
-
-# --- Constants for Roles (mirroring rbac.py or a central config) ---
-ADMIN_ROLE_CODE = "admin"
-DCS_OFFICER_ROLE_CODE = "dcs_officer"
-ZD_DEPUTY_HEAD_ROLE_CODE = "zd_deputy_head"
-DEPARTMENT_HEAD_ROLE_CODE = "department_head"
-DEPUTY_DEPARTMENT_HEAD_ROLE_CODE = "deputy_department_head"
-DIVISION_MANAGER_ROLE_CODE = "division_manager"
-DEPUTY_DIVISION_MANAGER_ROLE_CODE = "deputy_division_manager"
-CHECKPOINT_OPERATOR_ROLE_PREFIX = "checkpoint_operator_cp"
-EMPLOYEE_ROLE_CODE = "employee"
 
 # --- Test Client Setup ---
 # Override get_db dependency for all API tests
@@ -261,7 +251,7 @@ def test_get_visit_logs_forbidden(client, db_session_mock_api):
 # == PATCH /visits/{visit_log_id} ==
 def test_update_visit_log_checkout_success_cp_operator(client, db_session_mock_api):
     visit_log_id = 1
-    cp_op_user = mock_user_with_role(103, f"{CHECKPOINT_OPERATOR_ROLE_PREFIX}1")
+    cp_op_user = mock_user_with_role(103, f"{KPP_ROLE_PREFIX}1")
     main.app.dependency_overrides[get_current_active_user_for_req_router] = lambda: cp_op_user # This auth is for /visits router
 
     # Mock crud.get_visit_log

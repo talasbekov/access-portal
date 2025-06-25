@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
-from ..constants import CHECKPOINT_OPERATOR_ROLE_PREFIX
+from ..constants import KPP_ROLE_PREFIX
 from ..auth_dependencies import (
     get_current_user,
     get_current_active_user,
@@ -67,7 +67,7 @@ async def get_current_active_user_for_cp_router(current_user: models.User = Depe
 async def get_checkpoint_operator_user_local(
     current_user: models.User = Depends(get_current_active_user_for_cp_router)
 ) -> models.User:
-    if not current_user.role or not current_user.role.code.startswith(CHECKPOINT_OPERATOR_ROLE_PREFIX):
+    if not current_user.role or not current_user.role.code.startswith(KPP_ROLE_PREFIX):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="У пользователя нет привилегий оператора КПП"
@@ -90,7 +90,7 @@ async def read_checkpoint_requests(
     - RBAC for *specific* checkpoint access is partially handled by get_checkpoint_operator_user_local
       and further refined by crud.get_requests_for_checkpoint if needed.
     """
-    prefix = CHECKPOINT_OPERATOR_ROLE_PREFIX  # "KPP_"
+    prefix = KPP_ROLE_PREFIX  # "KPP_"
     suffix = current_user.role.code[len(prefix):]
     try:
         cp_id = int(suffix)
