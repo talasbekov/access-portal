@@ -4,16 +4,16 @@ from typing import List, Optional
 import os
 from fastapi.security import OAuth2PasswordBearer # Added
 from jose import JWTError, jwt # Added
+
+from ..crud import create_audit_log
 from ..dependencies import get_db
 from .. import crud, models, schemas, rbac
 from ..constants import *
 from ..auth import decode_token as auth_decode_token
 from ..auth_dependencies import (
-    get_current_user,
     get_current_active_user,
-    get_admin_user,
     get_security_officer_user,
-    get_checkpoint_operator_user, get_usb_user, get_as_user
+    get_usb_user, get_as_user
 )
 from dotenv import load_dotenv
 load_dotenv()
@@ -63,19 +63,6 @@ async def get_current_active_user_for_req_router(current_user: models.User = Dep
 # --- End Real Authentication Logic ---
 
 
-# Allowed roles for pass types (example role names/codes)
-from .. import constants # Import constants
-
-# These should ideally come from a config or constants module
-# SINGLE_DAY_ALLOWED_ROLES and MULTI_DAY_ALLOWED_ROLES are more complex logic,
-# not just simple role codes. They might be better handled in rbac.py or a service layer
-# if they involve checking against user.role.name (display name) rather than user.role.code.
-# For now, if these are string names, they can't directly use the role codes from constants.py
-# unless constants.py also stores these lists or the logic is changed to use codes.
-# Assuming the logic in create_request in crud.py handles this based on codes.
-# We will remove these local string lists if crud.create_request correctly uses constants.
-
-
 def parse_status_filter(
     raw: Optional[str] = Query(None, alias="status_filter")
 ) -> Optional[List[schemas.RequestStatusEnum]]:
@@ -99,15 +86,6 @@ async def read_all_requests( # Changed to async
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
-    # This endpoint should now primarily call crud.get_requests
-    # The crud.get_requests function is responsible for applying RBAC based on the user
-    # and then any additional filters provided.
-
-    # The old complex RBAC logic here is now moved into crud.get_requests
-    # and rbac.get_request_visibility_filters_for_user.
-    # Pass all relevant filters to crud.get_requests
-    # Note: The crud.get_requests function was updated to accept these named filters.
-    # Ensure that the names here match the parameter names in crud.get_requests.
     requests = crud.get_requests(
         db,
         user=current_user,
@@ -118,63 +96,140 @@ async def read_all_requests( # Changed to async
     return requests
 
 
+# Обновленный эндпоинт создания заявки в routers/requests.py
 @router.post("/", response_model=schemas.Request, status_code=status.HTTP_201_CREATED)
 async def create_request_endpoint(
-    request_in: schemas.RequestCreate, # Renamed from request_data
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+        request_in: schemas.RequestCreate,
+        db: Session = Depends(get_db),
+        current_user: models.User = Depends(get_current_active_user)
 ):
-    # All business logic (blacklist check, pass type rules, audit, notifications)
-    # is now handled within crud.create_request.
-    # The router's responsibility is to receive the request, authenticate the user,
-    # and call the appropriate CRUD function.
+    """
+    Создание новой заявки с автоматической отправкой на одобрение.
 
-    # The crud.create_request function expects 'request_in: schemas.RequestCreate' and 'creator: models.User'
-    # It will raise HTTPException on business rule violations (blacklist, pass type)
+    Заявка сразу направляется по соответствующему маршруту:
+    - УСБ: для долгосрочных заявок, заявок с > 3 человек или с иностранцами
+    - АС: для краткосрочных заявок с <= 3 гражданами КЗ
+
+    Статус DRAFT больше не используется.
+    """
     try:
         created_request = crud.create_request(db=db, request_in=request_in, creator=current_user)
         return created_request
-    except HTTPException as e: # Catch HTTPExceptions from CRUD to re-raise
-        raise e
-    except Exception as e: # Catch any other unexpected errors
-        # Log error e
-        print(f"Unexpected error in create_request_endpoint: {e}") # Basic logging
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during request creation.")
-
-
-@router.post("/{request_id}/submit", response_model=schemas.Request)
-async def submit_request_for_approval(
-    request_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
-):
-    # Business logic (status checks, ownership, audit, notifications) is in crud.submit_request
-    try:
-        updated_request = crud.submit_request(db=db, request_id=request_id, user=current_user)
-        return updated_request
     except HTTPException as e:
         raise e
     except Exception as e:
-        print(f"Unexpected error in submit_request_for_approval: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+        print(f"Unexpected error in create_request_endpoint: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Internal server error during request creation.")
 
 
+# Эндпоинт обновления теперь работает только для заявок в процессе одобрения
 @router.patch("/{request_id}", response_model=schemas.Request)
 async def update_request_endpoint(
-    request_id: int,
-    request_update: schemas.RequestUpdate, # Renamed from request_in
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+        request_id: int,
+        request_update: schemas.RequestUpdate,
+        db: Session = Depends(get_db),
+        current_user: models.User = Depends(get_current_active_user)
 ):
-    # Business logic (status checks, ownership, audit) is in crud.update_request_draft
+    """
+    Обновление заявки.
+
+    Внимание: Заявки больше не создаются в статусе DRAFT.
+    Этот эндпоинт может использоваться администраторами для корректировки
+    заявок в особых случаях.
+    """
+    # Получаем заявку с проверкой прав доступа
+    db_request = crud.get_request(db, request_id=request_id, user=current_user)
+    if not db_request:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
+
+    # Только администратор может редактировать заявки после отправки
+    if not rbac.is_admin(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Только администраторы могут редактировать отправленные заявки."
+        )
+
+    # Запрещаем редактирование финализированных заявок
+    final_statuses = [
+        schemas.RequestStatusEnum.DECLINED_USB.value,
+        schemas.RequestStatusEnum.DECLINED_AS.value,
+        schemas.RequestStatusEnum.CLOSED.value
+    ]
+    if db_request.status in final_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Невозможно редактировать заявку в статусе: {db_request.status}"
+        )
+
     try:
-        updated_request = crud.update_request_draft(db=db, request_id=request_id, request_update=request_update, user=current_user)
+        # Используем существующую функцию update_request_draft, но переименуем её позже
+        updated_request = crud.update_request_draft(db=db, request_id=request_id, request_update=request_update,
+                                                    user=current_user)
         return updated_request
     except HTTPException as e:
         raise e
     except Exception as e:
         print(f"Unexpected error in update_request_endpoint: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+
+# Эндпоинт удаления теперь доступен только администраторам
+@router.delete("/{request_id}", response_model=schemas.Request)
+async def delete_single_request(
+        request_id: int,
+        db: Session = Depends(get_db),
+        current_user: models.User = Depends(get_current_active_user)
+):
+    """
+    Удаление заявки. Доступно только администраторам.
+
+    Внимание: Удаление заявки может нарушить целостность данных журналов.
+    Рекомендуется использовать отмену (CLOSED) вместо удаления.
+    """
+    # Проверка прав администратора
+    if not rbac.is_admin(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Только администраторы могут удалять заявки."
+        )
+
+    # Получаем заявку
+    db_request_to_delete = crud.get_request(db, request_id=request_id, user=current_user)
+    if not db_request_to_delete:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found.")
+
+    # Предупреждение для важных статусов
+    important_statuses = [
+        schemas.RequestStatusEnum.APPROVED_AS.value,
+        schemas.RequestStatusEnum.ISSUED.value
+    ]
+    if db_request_to_delete.status in important_statuses:
+        # Можно добавить дополнительное подтверждение или логирование
+        create_audit_log(
+            db,
+            actor_id=current_user.id,
+            entity='request',
+            entity_id=request_id,
+            action='DELETE_IMPORTANT',
+            data={
+                "message": f"Администратор удалил заявку в статусе {db_request_to_delete.status}",
+                "status": db_request_to_delete.status
+            }
+        )
+
+    deleted_request_obj = crud.delete_request(db, db_request=db_request_to_delete)
+
+    crud.create_audit_log(
+        db,
+        actor_id=current_user.id,
+        entity='request',
+        entity_id=request_id,
+        action='DELETE',
+        data={"message": f"Request '{request_id}' deleted by admin {current_user.username}."}
+    )
+
+    return deleted_request_obj
 
 
 @router.get("/{request_id}", response_model=schemas.Request)
@@ -188,41 +243,6 @@ async def read_single_request(
     if not db_request: # Should have been raised by crud if not found/allowed based on its logic.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
     return db_request
-
-
-@router.delete("/{request_id}", response_model=schemas.Request) # Consider status_code=204 if no content returned
-async def delete_single_request(
-    request_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
-):
-    # Fetch request with RBAC check
-    db_request_to_delete = crud.get_request(db, request_id=request_id, user=current_user)
-    if not db_request_to_delete:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or not accessible for deletion.")
-
-    # Additional business rule: only creator or admin can delete, and only if DRAFT
-    from .. import rbac # For is_creator, is_admin
-    if not (rbac.is_creator(current_user, db_request_to_delete) or rbac.is_admin(current_user)):
-         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this request.")
-
-    if db_request_to_delete.status != schemas.RequestStatusEnum.DRAFT.value:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Only DRAFT requests can be deleted. Current status: {db_request_to_delete.status}")
-
-    # crud.delete_request itself is simple; the complex checks remain here or move to a service layer.
-    deleted_request_obj = crud.delete_request(db, db_request=db_request_to_delete)
-
-    # Audit log is now handled by crud.delete_request if modified to accept actor_id
-    # For now, let's assume crud.delete_request doesn't audit, so we do it here.
-    # Or, ensure crud.create_audit_log is called correctly if it's inside crud.delete_request.
-    # The plan implies crud.delete_request would handle audit.
-    # Let's assume crud.delete_request does not currently audit.
-    crud.create_audit_log(db, actor_id=current_user.id, entity='request',
-        entity_id=request_id, action='DELETE',
-        data={"message": f"Request '{request_id}' deleted by {current_user.username}."}
-    )
-    return deleted_request_obj # Return the deleted object as per current response_model
-
 
 # ------------- DCS Approval/Declination Endpoints -------------
 

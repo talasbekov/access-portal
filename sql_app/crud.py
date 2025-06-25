@@ -321,6 +321,15 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
 # Role constants are now in constants.py and imported.
 
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
+    """
+    Создание заявки с автоматической маршрутизацией на одобрение.
+
+    Логика маршрутизации:
+    - Долгосрочные заявки -> УСБ
+    - Краткосрочные заявки с > 3 человек -> УСБ
+    - Заявки с иностранными гражданами -> УСБ
+    - Краткосрочные заявки с <= 3 человек (только граждане КЗ) -> АС
+    """
     # 1. Проверка чёрного списка
     for person_schema in request_in.request_persons:
         if is_person_blacklisted(
@@ -363,7 +372,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный тип заявки.")
 
-    # 3. Создание заявки и персон
+    # 3. Проверка наличия КПП
     if not request_in.checkpoint_ids:
         raise HTTPException(400, "Необходимо указать хотя бы один КПП")
 
@@ -375,9 +384,26 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     if len(checkpoints) != len(request_in.checkpoint_ids):
         raise HTTPException(404, "Некоторые КПП не найдены")
 
+    # 4. Определение начального статуса заявки на основе бизнес-логики
+    # Проверка наличия иностранных граждан
+    contains_foreign_citizen = any(
+        p.nationality == models.NationalityType.FOREIGN for p in request_in.request_persons
+    )
+
+    # Определение маршрута согласно новым правилам
+    if (request_in.duration == RequestDuration.LONG_TERM or
+            len(request_in.request_persons) > 3 or
+            contains_foreign_citizen):
+        # Долгосрочные, больше 3 человек или есть иностранцы -> УСБ
+        initial_status = schemas.RequestStatusEnum.PENDING_USB.value
+    else:
+        # Краткосрочные, <= 3 человек, все граждане КЗ -> АС
+        initial_status = schemas.RequestStatusEnum.PENDING_AS.value
+
+    # 5. Создание заявки с определенным статусом
     db_request = models.Request(
         creator_id=creator.id,
-        status=request_in.status,
+        status=initial_status,  # Используем вычисленный статус вместо DRAFT
         start_date=request_in.start_date,
         end_date=request_in.end_date,
         arrival_purpose=request_in.arrival_purpose,
@@ -389,6 +415,7 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     db.add(db_request)
     db.commit()
 
+    # 6. Создание персон в заявке
     for person_schema in request_in.request_persons:
         person_model = models.RequestPerson(**person_schema.model_dump(), request_id=db_request.id)
         db.add(person_model)
@@ -396,10 +423,28 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
     db.flush()
     db.refresh(db_request)
 
-    # 4. Журнал действий
+    # 7. Журнал действий
     create_audit_log(db, actor_id=creator.id, entity="request", entity_id=db_request.id,
-                     action="CREATE",
-                     data={"status": db_request.status, "num_persons": len(db_request.request_persons)})
+                     action="CREATE_AND_SUBMIT",
+                     data={
+                         "status": db_request.status,
+                         "num_persons": len(db_request.request_persons),
+                         "route_reason": "auto_routed_on_creation"
+                     })
+
+    # 8. Создание уведомлений для соответствующих ролей
+    if db_request.status == schemas.RequestStatusEnum.PENDING_USB.value:
+        usb_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.USB_ROLE_CODE).all()
+        for usb_user in usb_users:
+            create_notification(db, user_id=usb_user.id,
+                                message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения (УСБ).",
+                                request_id=db_request.id)
+    elif db_request.status == schemas.RequestStatusEnum.PENDING_AS.value:
+        as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
+        for as_user in as_users:
+            create_notification(db, user_id=as_user.id,
+                                message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения (АС).",
+                                request_id=db_request.id)
 
     return db_request
 
@@ -597,60 +642,60 @@ def update_request_draft(db: Session, request_id: int, request_update: schemas.R
     return db_request
 
 
-def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
-    """
-    Подача заявки на одобрение. Маршрутизация согласно новым правилам:
-    - Долгосрочные заявки -> УСБ
-    - Краткосрочные заявки с > 3 человек -> УСБ
-    - Заявки с иностранными гражданами -> УСБ
-    - Краткосрочные заявки с <= 3 человек (только граждане КЗ) -> АС
-    """
-    from fastapi import status as fastapi_status
-    db_request = get_request(db, request_id=request_id, user=user)
-    if not db_request:
-        raise ResourceNotFoundException("Request", request_id)
-
-    from . import rbac
-    if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
-        raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN,
-                            detail="Not authorized to submit this request.")
-
-    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
-        raise InvalidRequestStateException(db_request.status, "DRAFT")
-
-    # Проверка наличия иностранных граждан
-    contains_foreign_citizen = any(
-        p.nationality == models.NationalityType.FOREIGN for p in db_request.request_persons
-    )
-
-    # Определение маршрута согласно новым правилам
-    if (db_request.duration == RequestDuration.LONG_TERM or
-            len(db_request.request_persons) > 3 or
-            contains_foreign_citizen):
-        # Долгосрочные, больше 3 человек или есть иностранцы -> УСБ
-        db_request.status = schemas.RequestStatusEnum.PENDING_USB.value
-    else:
-        # Краткосрочные, <= 3 человек, все граждане КЗ -> АС
-        db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
-
-    db.add(db_request)
-    db.commit()
-    db.refresh(db_request)
-
-    create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id,
-                     action="SUBMIT", data={"new_status": db_request.status})
-
-    # TODO: Уведомления для УСБ или АС в зависимости от маршрута
-    # if db_request.status == schemas.RequestStatusEnum.PENDING_USB.value:
-    #     usb_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.USB_ROLE_CODE).all()
-    #     for usb_user in usb_users:
-    #         create_notification(db, user_id=usb_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
-    # elif db_request.status == schemas.RequestStatusEnum.PENDING_AS.value:
-    #     as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
-    #     for as_user in as_users:
-    #         create_notification(db, user_id=as_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
-
-    return db_request
+# def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
+#     """
+#     Подача заявки на одобрение. Маршрутизация согласно новым правилам:
+#     - Долгосрочные заявки -> УСБ
+#     - Краткосрочные заявки с > 3 человек -> УСБ
+#     - Заявки с иностранными гражданами -> УСБ
+#     - Краткосрочные заявки с <= 3 человек (только граждане КЗ) -> АС
+#     """
+#     from fastapi import status as fastapi_status
+#     db_request = get_request(db, request_id=request_id, user=user)
+#     if not db_request:
+#         raise ResourceNotFoundException("Request", request_id)
+#
+#     from . import rbac
+#     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
+#         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN,
+#                             detail="Not authorized to submit this request.")
+#
+#     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
+#         raise InvalidRequestStateException(db_request.status, "DRAFT")
+#
+#     # Проверка наличия иностранных граждан
+#     contains_foreign_citizen = any(
+#         p.nationality == models.NationalityType.FOREIGN for p in db_request.request_persons
+#     )
+#
+#     # Определение маршрута согласно новым правилам
+#     if (db_request.duration == RequestDuration.LONG_TERM or
+#             len(db_request.request_persons) > 3 or
+#             contains_foreign_citizen):
+#         # Долгосрочные, больше 3 человек или есть иностранцы -> УСБ
+#         db_request.status = schemas.RequestStatusEnum.PENDING_USB.value
+#     else:
+#         # Краткосрочные, <= 3 человек, все граждане КЗ -> АС
+#         db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
+#
+#     db.add(db_request)
+#     db.commit()
+#     db.refresh(db_request)
+#
+#     create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id,
+#                      action="SUBMIT", data={"new_status": db_request.status})
+#
+#     # TODO: Уведомления для УСБ или АС в зависимости от маршрута
+#     # if db_request.status == schemas.RequestStatusEnum.PENDING_USB.value:
+#     #     usb_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.USB_ROLE_CODE).all()
+#     #     for usb_user in usb_users:
+#     #         create_notification(db, user_id=usb_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
+#     # elif db_request.status == schemas.RequestStatusEnum.PENDING_AS.value:
+#     #     as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
+#     #     for as_user in as_users:
+#     #         create_notification(db, user_id=as_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
+#
+#     return db_request
 
 # --- USB Workflow Functions ---
 def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> models.Request:

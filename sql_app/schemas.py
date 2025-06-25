@@ -26,26 +26,17 @@ class ApprovalStatusEnum(str, enum.Enum):
 
 
 class RequestStatusEnum(str, enum.Enum):
-    DRAFT = "DRAFT"
 
-    PENDING_USB = "PENDING_USB" # New: Submitted, awaiting USB approval
-    APPROVED_USB = "APPROVED_USB" # New: USB approved, typically moves to PENDING_AS
-    DECLINED_USB = "DECLINED_USB" # New: USB declined
+    PENDING_USB = "PENDING_USB"      # Ожидает одобрения УСБ
+    APPROVED_USB = "APPROVED_USB"    # Одобрено УСБ
+    DECLINED_USB = "DECLINED_USB"    # Отклонено УСБ
 
-    PENDING_AS = "PENDING_AS"   # New: Submitted (if direct) or USB approved, awaiting AS approval
-    APPROVED_AS = "APPROVED_AS" # New: AS approved (final approval before KPP) -> consider this as ISSUED
-    DECLINED_AS = "DECLINED_AS" # New: AS declined
+    PENDING_AS = "PENDING_AS"        # Ожидает одобрения АС
+    APPROVED_AS = "APPROVED_AS"      # Одобрено АС (финальное одобрение)
+    DECLINED_AS = "DECLINED_AS"      # Отклонено АС
 
-    # Old statuses - to be phased out or mapped if necessary
-    # PENDING_DCS = "PENDING_DCS"
-    # APPROVED_DCS = "APPROVED_DCS"
-    # DECLINED_DCS = "DECLINED_DCS"
-    # PENDING_ZD = "PENDING_ZD"
-    # APPROVED_ZD = "APPROVED_ZD"
-    # DECLINED_ZD = "DECLINED_ZD"
-
-    ISSUED = "ISSUED" # Pass issued (might be equivalent to APPROVED_AS)
-    CLOSED = "CLOSED" # Request completed or expired
+    ISSUED = "ISSUED"                # Пропуск выдан
+    CLOSED = "CLOSED"                # Заявка закрыта/отменена
 
 class RequestPersonStatusEnum(str, enum.Enum):
     PENDING = "PENDING"
@@ -321,11 +312,9 @@ class RequestBase(BaseModel):
     duration: Optional[RequestDuration]
 
 class RequestCreate(RequestBase):
-    # creator_id will typically be set by the current authenticated user
-    # request_persons can be provided on creation
     checkpoint_ids: List[int]
-    request_persons: List[RequestPersonCreate] # Changed from RequestPersonCreate
-    status: RequestStatusEnum = RequestStatusEnum.DRAFT # Set default status here
+    request_persons: List[RequestPersonCreate]
+
 
 class RequestUpdate(RequestBase):
     checkpoint_ids: List[int] = None
