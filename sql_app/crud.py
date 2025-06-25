@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 from datetime import date, timedelta, datetime
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import or_
+from sqlalchemy.sql.functions import func
 
 from . import models, schemas, auth, rbac, constants # Added constants
 from .models import RequestDuration
@@ -237,19 +238,17 @@ def approve_request_person(db: Session, request_person_id: int, approver: models
     ]
     if db_request.status not in allowed_request_statuses_for_modification:
         raise InvalidRequestStateException(
-            actual_status=db_request.status,
-            expected_status="a state allowing individual approvals (e.g., PENDING_USB, PENDING_AS)",
             detail=f"Cannot approve individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual approvals at this stage."
         )
 
     # TODO: Further refine based on approver's specific role (USB vs AS) and current request step.
-    if rbac.is_usb_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+    if rbac.is_usb(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
         raise InvalidRequestStateException(
             actual_status=db_request.status,
             expected_status=schemas.RequestStatusEnum.PENDING_USB.value,
             detail=f"USB officer can only approve individuals if main request is PENDING_USB. Current status: {db_request.status}"
         )
-    elif rbac.is_as_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
+    elif rbac.is_as(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
         raise InvalidRequestStateException(
             actual_status=db_request.status,
             expected_status=schemas.RequestStatusEnum.PENDING_AS.value,
@@ -262,6 +261,7 @@ def approve_request_person(db: Session, request_person_id: int, approver: models
     db.add(db_person)
     db.commit()
     db.refresh(db_person)
+    _finalize_request_if_all_persons_processed(db, db_person.request_id, approver)
     create_audit_log(db, actor_id=approver.id, entity="request_person", entity_id=db_person.id,
                      action="APPROVE", data={"request_id": db_person.request_id, "new_status": "APPROVED"})
     return db_person
@@ -292,13 +292,13 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
         )
 
     # TODO: Further refine based on approver's specific role (USB vs AS) and current request step.
-    if rbac.is_usb_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+    if rbac.is_usb(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
         raise InvalidRequestStateException(
             actual_status=db_request.status,
             expected_status=schemas.RequestStatusEnum.PENDING_USB.value,
             detail=f"USB officer can only reject individuals if main request is PENDING_USB. Current status: {db_request.status}"
         )
-    elif rbac.is_as_officer(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
+    elif rbac.is_as(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
         raise InvalidRequestStateException(
             actual_status=db_request.status,
             expected_status=schemas.RequestStatusEnum.PENDING_AS.value,
@@ -311,9 +311,68 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
     db.add(db_person)
     db.commit()
     db.refresh(db_person)
+    _finalize_request_if_all_persons_processed(db, db_person.request_id, approver)
     create_audit_log(db, actor_id=approver.id, entity="request_person", entity_id=db_person.id,
                      action="REJECT", data={"request_id": db_person.request_id, "new_status": "REJECTED", "reason": reason})
     return db_person
+
+def _finalize_request_if_all_persons_processed(db: Session, request_id: int, approver: models.User):
+    # Считаем общее число персон и число уже “обработанных” (не PENDING)
+    total = db.query(func.count(models.RequestPerson.id)).filter_by(request_id=request_id).scalar()
+    done = db.query(func.count(models.RequestPerson.id)).filter(
+        models.RequestPerson.request_id == request_id,
+        models.RequestPerson.status.in_([
+            models.RequestPersonStatus.APPROVED,
+            models.RequestPersonStatus.REJECTED
+        ])
+    ).scalar()
+
+    all_approved = db.query(func.count(models.RequestPerson.id)) \
+        .filter(
+        models.RequestPerson.request_id == request_id,
+        models.RequestPerson.status == models.RequestPersonStatus.APPROVED
+    ).scalar()
+
+    all_rejected = db.query(func.count(models.RequestPerson.id)) \
+        .filter(
+        models.RequestPerson.request_id == request_id,
+        models.RequestPerson.status == models.RequestPersonStatus.REJECTED
+    ).scalar()
+
+    # Если ещё остались в PENDING — выходим
+    if all_approved + all_rejected != total:
+        return
+
+    if all_approved > 0 and all_approved + all_rejected == total == done:
+        # USB → переводим в PENDING_AS, AS → сразу в APPROVED_AS
+        if rbac.is_usb(approver):
+            new_status = schemas.RequestStatusEnum.PENDING_AS.value
+        elif rbac.is_as(approver):
+            new_status = schemas.RequestStatusEnum.APPROVED_AS.value
+        else:
+            return  # другие роли не трогаем
+    elif all_approved == 0 and all_approved + all_rejected == total == done:
+        if rbac.is_usb(approver):
+            new_status = schemas.RequestStatusEnum.DECLINED_USB.value
+        elif rbac.is_as(approver):
+            new_status = schemas.RequestStatusEnum.DECLINED_AS.value
+        else:
+            return  # другие роли не трогаем
+
+    # Применяем новый статус
+    request_obj = db.get(models.Request, request_id)
+    request_obj.status = new_status
+    db.commit()
+    db.refresh(request_obj)
+
+    create_audit_log(
+        db,
+        actor_id=approver.id,
+        entity="request",
+        entity_id=request_id,
+        action="AUTO_STATUS_UPDATE",
+        data={"new_status": new_status}
+    )
 
 
 # ------------- Request CRUD (Modified) -------------
@@ -535,7 +594,7 @@ def get_requests(
     )
 
     # 1) Базовые фильтры видимости…
-    vf = rbac.get_request_visibility_filters_for_user(db, user)
+    vf = rbac.get_request_filters_for_user(db, user)
     if not vf.get("is_unrestricted", False):
         conds = []
 
@@ -566,8 +625,8 @@ def get_requests(
                 & models.Request.status.in_(vf.get("target_statuses", []))
             )
 
-        if not conds:
-            return []
+        # if not conds:
+        #     return []
         query = query.filter(or_(*conds))
 
 
@@ -1200,17 +1259,17 @@ def get_visit_logs_with_rbac(
     query = query.join(models.VisitLog.request).join(models.Request.creator) # Joining User table (aliased as creator)
 
     # Apply RBAC
-    if rbac.can_view_all_visit_logs(current_user): # USB, AS, Admin
+    if rbac.can_view_all_logs(current_user): # USB, AS, Admin
         # No additional department/checkpoint filters needed for these roles if they see everything
         pass
     elif current_user.role and current_user.role.code.startswith(constants.KPP_ROLE_PREFIX):
-        kpp_checkpoint_id = rbac.get_kpp_checkpoint_id_from_user(current_user)
+        kpp_checkpoint_id = rbac.get_request_filters_for_user(db, current_user)
         if kpp_checkpoint_id is not None:
             query = query.filter(models.VisitLog.checkpoint_id == kpp_checkpoint_id)
         else: # Invalid KPP role or no checkpoint ID derivable, return no logs
             return []
     else: # Must be a manager (Nach. Departamenta, Nach. Upravleniya)
-        allowed_dept_ids = rbac.get_allowed_creator_department_ids_for_visit_logs(db, current_user)
+        allowed_dept_ids = rbac.get_request_filters_for_user(db, current_user)
         if not allowed_dept_ids:
             return []
         # Filter based on the department ID of the creator of the request associated with the visit log

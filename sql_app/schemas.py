@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Optional, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, model_validator
 from datetime import datetime, date
 import enum
 
@@ -194,7 +194,7 @@ class UserForRecipient(BaseModel): # Simplified User for Notification recipient
 
 # ------------- RequestPerson Schemas -------------
 
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, Field, validator, model_validator
 
 class RequestPersonBase(BaseModel):
     firstname: str
@@ -218,7 +218,7 @@ class RequestPersonBase(BaseModel):
     status: RequestPersonStatusEnum = RequestPersonStatusEnum.PENDING
     rejection_reason: Optional[str] = None
 
-    @root_validator(pre=True) # Changed to pre=True to ensure nationality is available
+    # Changed to pre=True to ensure nationality is available
     @classmethod
     def check_iin_or_doc_number(cls, values):
         nationality = values.get('nationality')
@@ -283,7 +283,7 @@ class RequestPersonUpdate(BaseModel):
     status: Optional[RequestPersonStatusEnum] = None
     rejection_reason: Optional[str] = None
 
-    # TODO: Add root_validator for update if nationality changes, to ensure consistency
+    # TODO: Add model_validator for update if nationality changes, to ensure consistency
     # For example, if nationality changes from KZ to FOREIGN, IIN should be cleared and doc_number becomes required.
     # This can be complex. For now, assume PATCH updates individual fields and relies on full object validation elsewhere if needed.
 
@@ -418,7 +418,6 @@ class BlackListBase(BaseModel):
     reason: str # Reason for blacklisting should be mandatory
     status: str = 'ACTIVE'
 
-    @root_validator(pre=True)
     @classmethod
     def check_blacklist_identifier(cls, values):
         iin = values.get('iin')

@@ -6,16 +6,11 @@ from fastapi.security import OAuth2PasswordBearer # Added
 from jose import JWTError, jwt # Added
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
-
 from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
 from ..auth_dependencies import (
-    get_current_user,
     get_current_active_user,
-    get_admin_user,
-    get_security_officer_user,
-    get_checkpoint_operator_user
 )
 
 load_dotenv()
@@ -57,41 +52,18 @@ async def get_current_user_for_bl_router(token: str = Depends(oauth2_scheme_bl),
         raise credentials_exception
     return user
 
-async def get_current_active_user_for_bl_router(current_user: models.User = Depends(get_current_user_for_bl_router)) -> models.User:
-    if not current_user.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user (bl router)")
-    return current_user
-
-# Specific role check for Security Officer (can be expanded in Step 5 RBAC)
-async def get_security_officer_user_local(current_user: models.User = Depends(get_current_active_user_for_bl_router)) -> models.User:
-    allowed_roles = ["security_officer", "dcs_officer", "zd_deputy_head"]
-    if not current_user.role or current_user.role.code not in allowed_roles: # Example role code
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have Security Officer privileges")
-    return current_user
-# --- End Real Authentication Logic ---
-
-# Specific role check for Security Officer (can be expanded in Step 5 RBAC)
-async def get_security_officer_read_blacklist(current_user: models.User = Depends(get_current_active_user_for_bl_router)) -> models.User:
-    allowed_roles = ["security_officer", "dcs_officer", "zd_deputy_head", "admin", "department_head", "deputy_department_head", "division_manager", "deputy_division_manager", "KPP_", "employee"]
-    if not current_user.role or current_user.role.code not in allowed_roles: # Example role code
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User does not have Security Officer privileges")
-    return current_user
-# --- End Real Authentication Logic ---
-
 
 @router.get("/", response_model=List[schemas.BlackList])
 async def read_blacklist_entries(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_read_blacklist)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Retrieve all blacklist entries.
     - Requires authentication (Security Officer).
     """
-    # The crud.get_blacklist_entries can take active_only, skip, limit.
-    # For now, returning all, as per original logic in this router.
     entries = crud.get_blacklist_entries(db, skip=skip, limit=limit, active_only=True)
     return entries
 
@@ -101,7 +73,7 @@ async def read_all_blacklist_entries(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_read_blacklist)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Retrieve all blacklist entries.
@@ -117,7 +89,7 @@ async def read_all_blacklist_entries(
 async def create_blacklist_entry_endpoint(
     entry_in: schemas.BlackListCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_user)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Create a new blacklist entry.
@@ -133,7 +105,7 @@ async def create_blacklist_entry_endpoint(
 async def remove_blacklist_entry_endpoint( # Renamed to match plan's intent (soft delete)
     blacklist_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_security_officer_user)
+    current_user: models.User = Depends(get_current_active_user)
 ):
     """
     Deactivates a blacklist entry (soft delete by marking status=INACTIVE).

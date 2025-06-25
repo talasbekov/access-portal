@@ -34,7 +34,7 @@ class AuthDependencies:
         """Получить текущего аутентифицированного пользователя"""
         credentials_exception = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail="Истек срок токена, перезайдите",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -84,12 +84,9 @@ class AuthDependencies:
     ) -> models.User:
         """Требовать привилегии офицера безопасности, УСБ, АС или выше (Админ)"""
         allowed_roles = [
-            constants.SECURITY_OFFICER_ROLE_CODE, # Generic security officer
-            constants.USB_ROLE_CODE,              # New USB role
-            constants.AS_ROLE_CODE,               # New AS role
+            constants.USB_ROLE_CODE,
+            constants.AS_ROLE_CODE,
             constants.ADMIN_ROLE_CODE,
-            # constants.DCS_OFFICER_ROLE_CODE,    # Deprecated
-            # constants.ZD_DEPUTY_HEAD_ROLE_CODE  # Deprecated
         ]
         if not current_user.role or current_user.role.code not in allowed_roles:
             raise HTTPException(

@@ -239,7 +239,7 @@ async def read_single_request(
     current_user: models.User = Depends(get_current_active_user)
 ):
     # crud.get_request now handles RBAC and raises HTTPException if not found or not allowed
-    db_request = crud.get_request(db, request_id=request_id, user=current_user)
+    db_request = crud.get_request(db, request_id, current_user)
     if not db_request: # Should have been raised by crud if not found/allowed based on its logic.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
     return db_request
@@ -325,21 +325,11 @@ async def read_visit_logs_for_request(
         # This means either the request doesn't exist or the current_user doesn't have basic view access to it.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
 
-    # Step 2: Get request_creator_department_id
-    request_creator_department_id: Optional[int] = None
-    if db_request.creator and db_request.creator.department_id is not None:
-        request_creator_department_id = db_request.creator.department_id
 
     # Step 3: Apply RBAC checks for visit log history
     allowed = False
-    if rbac.can_view_all_visit_logs(current_user):
+    if rbac.can_view_all_logs(current_user):
         allowed = True
-    # Only proceed to department/division checks if full history is not granted AND department ID is available
-    elif request_creator_department_id is not None:
-        if rbac.can_user_access_visit_log_department_history(db, current_user, request_creator_department_id):
-            allowed = True
-        elif rbac.can_user_access_visit_log_division_history(db, current_user, request_creator_department_id):
-            allowed = True
 
     # Check if the current user is the creator of the request as a fallback
     # This was part of the original simpler check.
@@ -368,7 +358,7 @@ async def read_visit_logs_for_request(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view visit logs for this request.")
 
     # Step 4: If allowed, fetch and prepare visit logs for response
-    db_visit_logs = crud.get_visit_logs_by_request_id(db=db, request_id=request_id, skip=skip, limit=limit)
+    db_visit_logs = crud.get_visit_logs_by_request_id(db, request_id, skip, limit)
 
     response_visit_logs: List[schemas.VisitLog] = []
     for db_log in db_visit_logs:
@@ -430,7 +420,7 @@ async def approve_single_request_person(
     if not db_person or db_person.request_id != request_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RequestPerson with ID {person_id} not found in Request {request_id}.")
 
-    # TODO: Add check: Is the main Request in a status that allows individual approvals (e.g., PENDING_DCS, PENDING_ZD)?
+    # TODO: Add check: Is the main Request in a status that allows individual approvals (e.g., PENDING_USB, PENDING_AS)?
     # This logic might be complex, e.g. if request is PENDING_DCS, only DCS can approve. If PENDING_ZD, only ZD.
     # For now, get_security_officer_user ensures the user has one of the high-level roles.
     # Specific step validation (e.g. DCS can only approve if main request is PENDING_DCS) should be added in CRUD or here.

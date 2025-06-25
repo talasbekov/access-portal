@@ -33,9 +33,11 @@ def check_permission(current_user: models.User):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User role not defined.")
 
     is_admin = current_user.role.code == constants.ADMIN_ROLE_CODE
+    is_usb = current_user.role.code == constants.USB_ROLE_CODE
+    is_as = current_user.role.code == constants.AS_ROLE_CODE
     is_checkpoint_operator = current_user.role.code and current_user.role.code.startswith(constants.KPP_ROLE_PREFIX)
 
-    if not (is_admin or is_checkpoint_operator):
+    if not (is_admin or is_checkpoint_operator or is_usb or is_as):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to manage visit logs.")
 
 
@@ -117,7 +119,7 @@ async def record_visitor_entry(
 
     # 4. Validate Request status
     allowed_request_statuses = [
-        schemas.RequestStatusEnum.APPROVED_ZD.value,
+        schemas.RequestStatusEnum.APPROVED_AS.value,
         schemas.RequestStatusEnum.ISSUED.value # Assuming ISSUED means pass is active
     ]
     if db_request.status not in allowed_request_statuses:

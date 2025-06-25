@@ -68,7 +68,7 @@ def get_current_user_from_auth_router(  # Убрали async
 ) -> models.User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Истек срок токена, перезайдите",
         headers={"WWW-Authenticate": "Bearer"},
     )
     if not SECRET_KEY or not ALGORITHM: # Runtime check

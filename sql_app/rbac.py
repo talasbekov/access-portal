@@ -153,7 +153,7 @@ def can_user_check_in_visitor(user: models.User, request: models.Request) -> boo
     return False
 
 
-def can_user_view_request(user: models.User, request: models.Request) -> bool:
+def can_user_view_request(db: Session, user: models.User, request: models.Request) -> bool:
     """Проверка права просмотра конкретной заявки"""
     # Админ, УСБ, АС видят все
     if can_view_all_requests(user):
@@ -166,7 +166,7 @@ def can_user_view_request(user: models.User, request: models.Request) -> bool:
     # Начальники видят заявки своих подразделений
     if user.department_id and request.creator and request.creator.department_id:
         from . import crud
-        dept_ids = get_user_department_scope(crud.get_db(), user)
+        dept_ids = get_user_department_scope(db, user)
         if request.creator.department_id in dept_ids:
             return True
 
