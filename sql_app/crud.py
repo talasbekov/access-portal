@@ -1,7 +1,7 @@
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, contains_eager
 from typing import List, Optional, Any, Union
 from fastapi import HTTPException, status
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, time
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import or_
 from sqlalchemy.sql.functions import func
@@ -231,32 +231,53 @@ def approve_request_person(db: Session, request_person_id: int, approver: models
     if not db_request:
         raise ResourceNotFoundException("Request", db_person.request_id) # Should not happen if person exists
 
-    allowed_request_statuses_for_modification = [
+    allowed_request_statuses_for_usb = [
         schemas.RequestStatusEnum.PENDING_USB.value,
-        schemas.RequestStatusEnum.APPROVED_USB.value, # If DCS approves, then ZD can act on individuals
-        schemas.RequestStatusEnum.PENDING_AS.value
+        schemas.RequestStatusEnum.APPROVED_USB.value,
+        schemas.RequestStatusEnum.DECLINED_USB.value,
     ]
-    if db_request.status not in allowed_request_statuses_for_modification:
-        raise InvalidRequestStateException(
-            detail=f"Cannot approve individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual approvals at this stage."
-        )
 
-    # TODO: Further refine based on approver's specific role (USB vs AS) and current request step.
-    if rbac.is_usb(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
-        raise InvalidRequestStateException(
-            actual_status=db_request.status,
-            expected_status=schemas.RequestStatusEnum.PENDING_USB.value,
-            detail=f"USB officer can only approve individuals if main request is PENDING_USB. Current status: {db_request.status}"
-        )
-    elif rbac.is_as(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
-        raise InvalidRequestStateException(
-            actual_status=db_request.status,
-            expected_status=schemas.RequestStatusEnum.PENDING_AS.value,
-            detail=f"AS officer can only approve individuals if main request is PENDING_AS. Current status: {db_request.status}"
-        )
-    # If user is neither USB nor AS but somehow got here (e.g. Admin via get_security_officer_user), this check might need to be more encompassing or rely on a general "is_approver_role"
+    if rbac.is_usb(approver) and db_request.status not in allowed_request_statuses_for_usb:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником AC или статус заявки не совпадает с нужным!")
 
-    db_person.status = models.RequestPersonStatus.APPROVED
+    allowed_request_statuses_for_as = [
+        schemas.RequestStatusEnum.APPROVED_USB.value,
+        schemas.RequestStatusEnum.PENDING_AS.value,
+        schemas.RequestStatusEnum.APPROVED_AS.value,
+        schemas.RequestStatusEnum.DECLINED_AS.value,
+    ]
+
+    if rbac.is_as(approver) and db_request.status not in allowed_request_statuses_for_as:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником УСБ или статус заявки не совпадает с нужным!")
+
+    allowed_usb_statuses = {
+        schemas.RequestPersonStatusEnum.PENDING_USB.value,
+        schemas.RequestPersonStatusEnum.APPROVED_USB.value,
+        schemas.RequestPersonStatusEnum.DECLINED_USB.value,
+    }
+
+    allowed_as_statuses = {
+        schemas.RequestPersonStatusEnum.APPROVED_USB.value,
+        schemas.RequestPersonStatusEnum.PENDING_AS.value,
+        schemas.RequestPersonStatusEnum.APPROVED_AS.value,
+        schemas.RequestPersonStatusEnum.DECLINED_AS.value,
+    }
+
+    # Debug current status
+    print(f"Current status: {db_person.status!r}")
+
+    # Approve based on role and allowed statuses
+    if rbac.is_usb(approver) and db_person.status.value in allowed_usb_statuses:
+        db_person.status = models.RequestPersonStatus.APPROVED_USB
+        print(f"Updated status to: {db_person.status!r}")
+    elif rbac.is_as(approver) and db_person.status.value in allowed_as_statuses:
+        db_person.status = models.RequestPersonStatus.APPROVED_AS
+        print(f"Updated status to: {db_person.status!r}")
+    else:
+        # Handle unauthorized or invalid transitions
+        raise PermissionError(
+            "You are not allowed to approve this request or the current status is invalid for your role."
+        )
     db_person.rejection_reason = None # Clear any previous rejection reason
     db.add(db_person)
     db.commit()
@@ -279,34 +300,50 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
     if not db_request:
         raise ResourceNotFoundException("Request", db_person.request_id)
 
-    allowed_request_statuses_for_modification = [
+    allowed_request_statuses_for_usb = [
         schemas.RequestStatusEnum.PENDING_USB.value,
         schemas.RequestStatusEnum.APPROVED_USB.value,
-        schemas.RequestStatusEnum.PENDING_AS.value
+        schemas.RequestStatusEnum.DECLINED_USB.value,
     ]
-    if db_request.status not in allowed_request_statuses_for_modification:
-        raise InvalidRequestStateException(
-            actual_status=db_request.status,
-            expected_status="a state allowing individual rejections (e.g., PENDING_USB, PENDING_AS)",
-            detail=f"Cannot reject individual person. Main request {db_request.id} is in status '{db_request.status}', which does not allow individual rejections at this stage."
-        )
 
-    # TODO: Further refine based on approver's specific role (USB vs AS) and current request step.
-    if rbac.is_usb(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
-        raise InvalidRequestStateException(
-            actual_status=db_request.status,
-            expected_status=schemas.RequestStatusEnum.PENDING_USB.value,
-            detail=f"USB officer can only reject individuals if main request is PENDING_USB. Current status: {db_request.status}"
-        )
-    elif rbac.is_as(approver) and db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
-        raise InvalidRequestStateException(
-            actual_status=db_request.status,
-            expected_status=schemas.RequestStatusEnum.PENDING_AS.value,
-            detail=f"AS officer can only reject individuals if main request is PENDING_AS. Current status: {db_request.status}"
-        )
-    # Add Admin override or more general approver role check if needed
+    if rbac.is_usb(approver) and db_request.status not in allowed_request_statuses_for_usb:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником АС или статус заявки не совпадает с нужным!")
 
-    db_person.status = models.RequestPersonStatus.REJECTED
+    allowed_request_statuses_for_as = [
+        schemas.RequestStatusEnum.APPROVED_USB.value,
+        schemas.RequestStatusEnum.PENDING_AS.value,
+        schemas.RequestStatusEnum.APPROVED_AS.value,
+        schemas.RequestStatusEnum.DECLINED_AS.value,
+    ]
+
+    if rbac.is_as(approver) and db_request.status not in allowed_request_statuses_for_as:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником УСБ или статус заявки не совпадает с нужным!")
+
+    allowed_usb_statuses = {
+        schemas.RequestPersonStatusEnum.PENDING_USB.value,
+        schemas.RequestPersonStatusEnum.APPROVED_USB.value,
+        schemas.RequestPersonStatusEnum.DECLINED_USB.value,
+    }
+
+    allowed_as_statuses = {
+        schemas.RequestPersonStatusEnum.APPROVED_USB.value,
+        schemas.RequestPersonStatusEnum.PENDING_AS.value,
+        schemas.RequestPersonStatusEnum.APPROVED_AS.value,
+        schemas.RequestPersonStatusEnum.DECLINED_AS.value,
+    }
+
+    # Approve based on role and allowed statuses
+    if rbac.is_usb(approver) and db_person.status.value in allowed_usb_statuses:
+        db_person.status = models.RequestPersonStatus.DECLINED_USB
+        print(f"Updated status to: {db_person.status!r}")
+    elif rbac.is_as(approver) and db_person.status.value in allowed_as_statuses:
+        db_person.status = models.RequestPersonStatus.DECLINED_AS
+        print(f"Updated status to: {db_person.status!r}")
+    else:
+        # Handle unauthorized or invalid transitions
+        raise PermissionError(
+            "You are not allowed to approve this request or the current status is invalid for your role."
+        )
     db_person.rejection_reason = reason
     db.add(db_person)
     db.commit()
@@ -317,49 +354,61 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
     return db_person
 
 def _finalize_request_if_all_persons_processed(db: Session, request_id: int, approver: models.User):
-    # Считаем общее число персон и число уже “обработанных” (не PENDING)
-    total = db.query(func.count(models.RequestPerson.id)).filter_by(request_id=request_id).scalar()
-    done = db.query(func.count(models.RequestPerson.id)).filter(
-        models.RequestPerson.request_id == request_id,
-        models.RequestPerson.status.in_([
-            models.RequestPersonStatus.APPROVED,
-            models.RequestPersonStatus.REJECTED
-        ])
-    ).scalar()
+    """
+    Автоматически переводит статус Request, когда все связанные RequestPerson обработаны для данной роли.
+    """
+    # Разрешенные статусы для обработки в зависимости от роли
+    usb_processed_statuses = [
+        models.RequestPersonStatus.APPROVED_USB,
+        models.RequestPersonStatus.DECLINED_USB,
+    ]
+    as_processed_statuses = [
+        models.RequestPersonStatus.APPROVED_AS,
+        models.RequestPersonStatus.DECLINED_AS,
+    ]
+    # Выбираем набор статусов и будущий статус Request в зависимости от роли
+    if rbac.is_usb(approver):
+        processed_statuses = usb_processed_statuses
+        approved_status = models.RequestPersonStatus.APPROVED_USB
+        next_if_some = schemas.RequestStatusEnum.PENDING_AS.value
+        next_if_none = schemas.RequestStatusEnum.DECLINED_USB.value
+    elif rbac.is_as(approver):
+        processed_statuses = as_processed_statuses
+        approved_status = models.RequestPersonStatus.APPROVED_AS
+        next_if_some = schemas.RequestStatusEnum.APPROVED_AS.value
+        next_if_none = schemas.RequestStatusEnum.DECLINED_AS.value
+    else:
+        return  # Не для других ролей
 
-    all_approved = db.query(func.count(models.RequestPerson.id)) \
+    # Общее число персон в запросе
+    total = db.query(func.count(models.RequestPerson.id)) \
+        .filter(models.RequestPerson.request_id == request_id) \
+        .scalar() or 0
+
+    # Число обработанных персон (не в PENDING)
+    done = db.query(func.count(models.RequestPerson.id)) \
         .filter(
-        models.RequestPerson.request_id == request_id,
-        models.RequestPerson.status == models.RequestPersonStatus.APPROVED
-    ).scalar()
+            models.RequestPerson.request_id == request_id,
+            models.RequestPerson.status.in_(processed_statuses)
+        ) \
+        .scalar() or 0
 
-    all_rejected = db.query(func.count(models.RequestPerson.id)) \
-        .filter(
-        models.RequestPerson.request_id == request_id,
-        models.RequestPerson.status == models.RequestPersonStatus.REJECTED
-    ).scalar()
-
-    # Если ещё остались в PENDING — выходим
-    if all_approved + all_rejected != total:
+    # Если ещё не все обработаны — ничего не делаем
+    if done != total:
         return
 
-    if all_approved > 0 and all_approved + all_rejected == total == done:
-        # USB → переводим в PENDING_AS, AS → сразу в APPROVED_AS
-        if rbac.is_usb(approver):
-            new_status = schemas.RequestStatusEnum.PENDING_AS.value
-        elif rbac.is_as(approver):
-            new_status = schemas.RequestStatusEnum.APPROVED_AS.value
-        else:
-            return  # другие роли не трогаем
-    elif all_approved == 0 and all_approved + all_rejected == total == done:
-        if rbac.is_usb(approver):
-            new_status = schemas.RequestStatusEnum.DECLINED_USB.value
-        elif rbac.is_as(approver):
-            new_status = schemas.RequestStatusEnum.DECLINED_AS.value
-        else:
-            return  # другие роли не трогаем
+    # Считаем сколько из них одобрено
+    approved_count = db.query(func.count(models.RequestPerson.id)) \
+        .filter(
+            models.RequestPerson.request_id == request_id,
+            models.RequestPerson.status == approved_status
+        ) \
+        .scalar() or 0
 
-    # Применяем новый статус
+    # Выбираем новый статус Request
+    new_status = next_if_some if approved_count > 0 else next_if_none
+
+    # Применяем статус к запросу
     request_obj = db.get(models.Request, request_id)
     request_obj.status = new_status
     db.commit()
@@ -476,6 +525,16 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
 
     # 6. Создание персон в заявке
     for person_schema in request_in.request_persons:
+        # Определение маршрута согласно новым правилам
+        if (request_in.duration == RequestDuration.LONG_TERM or
+                len(request_in.request_persons) > 3 or
+                contains_foreign_citizen):
+            # Долгосрочные, больше 3 человек или есть иностранцы -> УСБ
+            person_schema.status = schemas.RequestPersonStatusEnum.PENDING_USB.value
+        else:
+            # Краткосрочные, <= 3 человек, все граждане КЗ -> АС
+            person_schema.status = schemas.RequestPersonStatusEnum.PENDING_AS.value
+
         person_model = models.RequestPerson(**person_schema.model_dump(), request_id=db_request.id)
         db.add(person_model)
     db.commit()
@@ -668,8 +727,8 @@ def update_request_draft(db: Session, request_id: int, request_update: schemas.R
         # get_request would have raised 403 if not allowed, or this means 404
         raise ResourceNotFoundException("Request", request_id)
 
-    if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
-        raise InvalidRequestStateException(db_request.status, "DRAFT")
+    if db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
+        raise InvalidRequestStateException(db_request.status, "PENDING_USB")
 
     from . import rbac # Import rbac module for creator check
     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user): # Allow admin to edit drafts too
@@ -701,73 +760,24 @@ def update_request_draft(db: Session, request_id: int, request_update: schemas.R
     return db_request
 
 
-# def submit_request(db: Session, request_id: int, user: models.User) -> models.Request:
-#     """
-#     Подача заявки на одобрение. Маршрутизация согласно новым правилам:
-#     - Долгосрочные заявки -> УСБ
-#     - Краткосрочные заявки с > 3 человек -> УСБ
-#     - Заявки с иностранными гражданами -> УСБ
-#     - Краткосрочные заявки с <= 3 человек (только граждане КЗ) -> АС
-#     """
-#     from fastapi import status as fastapi_status
-#     db_request = get_request(db, request_id=request_id, user=user)
-#     if not db_request:
-#         raise ResourceNotFoundException("Request", request_id)
-#
-#     from . import rbac
-#     if not rbac.is_creator(user, db_request) and not rbac.is_admin(user):
-#         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN,
-#                             detail="Not authorized to submit this request.")
-#
-#     if db_request.status != schemas.RequestStatusEnum.DRAFT.value:
-#         raise InvalidRequestStateException(db_request.status, "DRAFT")
-#
-#     # Проверка наличия иностранных граждан
-#     contains_foreign_citizen = any(
-#         p.nationality == models.NationalityType.FOREIGN for p in db_request.request_persons
-#     )
-#
-#     # Определение маршрута согласно новым правилам
-#     if (db_request.duration == RequestDuration.LONG_TERM or
-#             len(db_request.request_persons) > 3 or
-#             contains_foreign_citizen):
-#         # Долгосрочные, больше 3 человек или есть иностранцы -> УСБ
-#         db_request.status = schemas.RequestStatusEnum.PENDING_USB.value
-#     else:
-#         # Краткосрочные, <= 3 человек, все граждане КЗ -> АС
-#         db_request.status = schemas.RequestStatusEnum.PENDING_AS.value
-#
-#     db.add(db_request)
-#     db.commit()
-#     db.refresh(db_request)
-#
-#     create_audit_log(db, actor_id=user.id, entity="request", entity_id=db_request.id,
-#                      action="SUBMIT", data={"new_status": db_request.status})
-#
-#     # TODO: Уведомления для УСБ или АС в зависимости от маршрута
-#     # if db_request.status == schemas.RequestStatusEnum.PENDING_USB.value:
-#     #     usb_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.USB_ROLE_CODE).all()
-#     #     for usb_user in usb_users:
-#     #         create_notification(db, user_id=usb_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
-#     # elif db_request.status == schemas.RequestStatusEnum.PENDING_AS.value:
-#     #     as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
-#     #     for as_user in as_users:
-#     #         create_notification(db, user_id=as_user.id, message=f"Новая заявка {db_request.id} ожидает вашего рассмотрения.", request_id=db_request.id)
-#
-#     return db_request
-
 # --- USB Workflow Functions ---
-def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> models.Request:
+def approve_request_usb(db: Session, request_id: int, approver: models.User) -> models.Request:
     """
     Одобрение заявки пользователем с ролью УСБ.
     После одобрения УСБ заявка переходит к АС.
     """
-    db_request = get_request(db, request_id=request_id, user=usb_user)
+    db_request = get_request(db, request_id, approver)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
 
-    if db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
-        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_USB.value)
+    allowed_request_statuses_for_usb = [
+        schemas.RequestStatusEnum.PENDING_USB.value,
+        schemas.RequestStatusEnum.APPROVED_USB.value,
+        schemas.RequestStatusEnum.DECLINED_USB.value,
+    ]
+
+    if rbac.is_usb(approver) and db_request.status not in allowed_request_statuses_for_usb:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником УСБ и статус заявки не совпадает с нужным!")
 
     # Обновление статуса заявки
     db_request.status = schemas.RequestStatusEnum.APPROVED_USB.value
@@ -777,7 +787,7 @@ def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> 
 
     # Каскадное одобрение всех персон в заявке
     for person in db_request.request_persons:
-        person.status = models.RequestPersonStatus.APPROVED
+        person.status = models.RequestPersonStatus.APPROVED_USB.value
         person.rejection_reason = None
         db.add(person)
 
@@ -785,23 +795,29 @@ def approve_request_usb(db: Session, request_id: int, usb_user: models.User) -> 
     db.commit()
     db.refresh(db_request)
 
-    create_audit_log(db, actor_id=usb_user.id, entity="request", entity_id=db_request.id,
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id,
                      action="USB_APPROVE_ALL", data={"new_status": db_request.status})
 
     # TODO: Уведомить пользователей с ролью АС
     as_users = db.query(models.User).join(models.Role).filter(models.Role.code == constants.AS_ROLE_CODE).all()
     for as_user in as_users:
-        create_notification(db, user_id=as_user.id, message=f"Заявка {db_request.id} одобрена УСБ и ожидает вашего рассмотрения.", request_id=db_request.id)
+        create_notification(db, as_user.id, message=f"Заявка {db_request.id} одобрена УСБ и ожидает вашего рассмотрения.", request_id=db_request.id)
 
     return db_request
 
-def decline_request_usb(db: Session, request_id: int, usb_user: models.User, reason: str) -> models.Request:
-    db_request = get_request(db, request_id=request_id, user=usb_user)
+def decline_request_usb(db: Session, request_id: int, approver: models.User, reason: str) -> models.Request:
+    db_request = get_request(db, request_id, approver)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
 
-    if db_request.status != schemas.RequestStatusEnum.PENDING_USB.value:
-        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_USB.value)
+    allowed_request_statuses_for_usb = [
+        schemas.RequestStatusEnum.PENDING_USB.value,
+        schemas.RequestStatusEnum.APPROVED_USB.value,
+        schemas.RequestStatusEnum.DECLINED_USB.value,
+    ]
+
+    if rbac.is_usb(approver) and db_request.status not in allowed_request_statuses_for_usb:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником УСБ и статус заявки не совпадает с нужным!")
 
     if not reason or len(reason.strip()) == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason is required for declining the request.")
@@ -811,50 +827,46 @@ def decline_request_usb(db: Session, request_id: int, usb_user: models.User, rea
     # Cascade rejection to all persons
     cascade_rejection_reason = f"Main request declined by USB: {reason}"
     for person in db_request.request_persons:
-        person.status = models.RequestPersonStatus.REJECTED
+        person.status = models.RequestPersonStatus.DECLINED_USB.value
         person.rejection_reason = cascade_rejection_reason
         db.add(person)
 
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
-    create_audit_log(db, actor_id=usb_user.id, entity="request", entity_id=db_request.id,
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id,
                      action="USB_DECLINE_ALL", data={"new_status": db_request.status, "reason": reason})
     # TODO: Notify creator about rejection.
     return db_request
 
 
-# Old approval logic - will be replaced by USB/AS specific functions
-# def approve_request_step(db: Session, request_id: int, approver: models.User, comment: Optional[str]) -> models.Request:
-#     from fastapi import status as fastapi_status
-#     db_request = get_request(db, request_id=request_id, user=approver)
-# ... (rest of old function) ...
-
-# def decline_request_step(...)
-# ... (rest of old function) ...
-
-
 # --- AS Workflow Functions ---
-def approve_request_as(db: Session, request_id: int, as_user: models.User) -> models.Request:
+def approve_request_as(db: Session, request_id: int, approver: models.User) -> models.Request:
     """
     Одобрение заявки пользователем с ролью АС.
     Это финальное одобрение, после которого заявка становится доступна для КПП.
     """
-    db_request = get_request(db, request_id=request_id, user=as_user)
+    db_request = get_request(db, request_id, approver)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
 
     # АС может одобрять заявки в статусе PENDING_AS (прямые или после УСБ)
-    if db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
-        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_AS.value)
+    allowed_request_statuses_for_as = [
+        schemas.RequestStatusEnum.PENDING_AS.value,
+        schemas.RequestStatusEnum.APPROVED_AS.value,
+        schemas.RequestStatusEnum.DECLINED_AS.value,
+    ]
+
+    if rbac.is_as(approver) and db_request.status not in allowed_request_statuses_for_as:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником АС и статус заявки не совпадает с нужным!")
 
     # Финальное одобрение
     db_request.status = schemas.RequestStatusEnum.APPROVED_AS.value
 
     # Каскадное одобрение всех персон, которые ещё не отклонены
     for person in db_request.request_persons:
-        if person.status != models.RequestPersonStatus.REJECTED:
-            person.status = models.RequestPersonStatus.APPROVED
+        if person.status != models.RequestPersonStatus.DECLINED_AS.value:
+            person.status = models.RequestPersonStatus.APPROVED_AS.value
             person.rejection_reason = None
             db.add(person)
 
@@ -862,7 +874,7 @@ def approve_request_as(db: Session, request_id: int, as_user: models.User) -> mo
     db.commit()
     db.refresh(db_request)
 
-    create_audit_log(db, actor_id=as_user.id, entity="request", entity_id=db_request.id,
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id,
                      action="AS_APPROVE_ALL", data={"new_status": db_request.status})
 
     # TODO: Уведомить создателя заявки и операторов КПП
@@ -882,13 +894,19 @@ def approve_request_as(db: Session, request_id: int, as_user: models.User) -> mo
 
     return db_request
 
-def decline_request_as(db: Session, request_id: int, as_user: models.User, reason: str) -> models.Request:
-    db_request = get_request(db, request_id=request_id, user=as_user)
+def decline_request_as(db: Session, request_id: int, approver: models.User, reason: str) -> models.Request:
+    db_request = get_request(db, request_id, approver)
     if not db_request:
         raise ResourceNotFoundException("Request", request_id)
 
-    if db_request.status != schemas.RequestStatusEnum.PENDING_AS.value:
-        raise InvalidRequestStateException(db_request.status, schemas.RequestStatusEnum.PENDING_AS.value)
+    allowed_request_statuses_for_as = [
+        schemas.RequestStatusEnum.PENDING_AS.value,
+        schemas.RequestStatusEnum.APPROVED_AS.value,
+        schemas.RequestStatusEnum.DECLINED_AS.value,
+    ]
+
+    if rbac.is_as(approver) and db_request.status not in allowed_request_statuses_for_as:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Вы не являетесь сотрудником АС и статус заявки не совпадает с нужным!")
 
     if not reason or len(reason.strip()) == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason is required for declining the request.")
@@ -899,8 +917,8 @@ def decline_request_as(db: Session, request_id: int, as_user: models.User, reaso
     for person in db_request.request_persons:
         # Only reject persons who are not already rejected to avoid overwriting specific previous rejection reasons by USB.
         # Or, always overwrite if AS decline is final. For now, let's assume AS decline is final for all non-approved.
-        if person.status != models.RequestPersonStatus.REJECTED:
-             person.status = models.RequestPersonStatus.REJECTED
+        if person.status != models.RequestPersonStatus.DECLINED_AS.value:
+             person.status = models.RequestPersonStatus.DECLINED_AS.value
              person.rejection_reason = cascade_rejection_reason # Overwrites individual USB reasons if any
         # If a person was individually approved by USB, and AS rejects the whole request, that person becomes rejected.
         db.add(person)
@@ -908,41 +926,48 @@ def decline_request_as(db: Session, request_id: int, as_user: models.User, reaso
     db.add(db_request)
     db.commit()
     db.refresh(db_request)
-    create_audit_log(db, actor_id=as_user.id, entity="request", entity_id=db_request.id,
+    create_audit_log(db, actor_id=approver.id, entity="request", entity_id=db_request.id,
                      action="AS_DECLINE_ALL", data={"new_status": db_request.status, "reason": reason})
     # TODO: Notify creator about rejection.
     return db_request
 
 
 def get_requests_for_checkpoint(db: Session, checkpoint_id: int, user: models.User) -> list[type[models.Request]]:
-    from fastapi import status as fastapi_status
-
     if not (user.role and user.role.code.startswith(constants.KPP_ROLE_PREFIX)):
-         raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail="User not a checkpoint operator.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User not a checkpoint operator."
+        )
 
-    # Optional: More specific check if operator is for this specific checkpoint_id
-    # expected_role_code = f"{constants.KPP_ROLE_PREFIX}{checkpoint_id}"
-    # if user.role.code != expected_role_code:
-    #     raise HTTPException(status_code=fastapi_status.HTTP_403_FORBIDDEN, detail=f"User not authorized for checkpoint {checkpoint_id}.")
+    # the statuses we care about
+    approved_request_statuses = [
+        schemas.RequestStatusEnum.APPROVED_AS.value,
+        schemas.RequestStatusEnum.ISSUED.value,
+    ]
+    approved_person_status = schemas.RequestPersonStatusEnum.APPROVED_AS.value
 
     query = (
         db.query(models.Request)
-        .filter(
-            models.Request.checkpoints.any(
-                models.Checkpoint.id == checkpoint_id
-            ),
-            models.Request.status.in_([
-                schemas.RequestStatusEnum.APPROVED_AS.value,
-                schemas.RequestStatusEnum.ISSUED.value
-            ])
-        )
-        .options(
-            selectinload(models.Request.creator)
-            .selectinload(models.User.role),
-            selectinload(models.Request.request_persons),
-            selectinload(models.Request.checkpoints)  # если нужно подгрузить инфо о КПП
-        )
-        .order_by(models.Request.created_at.desc())
+          # join only through approved persons
+          .join(models.Request.request_persons)
+          .filter(
+              # request must be for this checkpoint
+              models.Request.checkpoints.any(models.Checkpoint.id == checkpoint_id),
+              # request must be APPROVED_AS or ISSUED
+              models.Request.status.in_(approved_request_statuses),
+              # person must be APPROVED
+              models.RequestPerson.status == approved_person_status,
+          )
+          # load that joined RequestPerson into the .request_persons collection
+          .options(
+              contains_eager(models.Request.request_persons),
+              # still eager-load creator→role and checkpoints
+              selectinload(models.Request.creator).selectinload(models.User.role),
+              selectinload(models.Request.checkpoints),
+          )
+          # avoid duplicate Request rows if there are multiple approved persons
+          .distinct()
+          .order_by(models.Request.created_at.desc())
     )
 
     return query.all()
@@ -1206,7 +1231,7 @@ def create_visit_log(db: Session, visit_log: schemas.VisitLogCreate) -> models.V
         request_id=visit_log.request_id,
         request_person_id=visit_log.request_person_id,
         checkpoint_id=visit_log.checkpoint_id, # Added checkpoint_id
-        check_out_time=visit_log.check_out_time
+        check_in_time=visit_log.check_in_time
     )
     db.add(db_visit_log)
     db.commit()
@@ -1248,50 +1273,74 @@ def get_visit_logs_with_rbac(
     limit: int = 100,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None
-) -> list[type[models.VisitLog]]:
+) -> List[models.VisitLog]:
     """
-    Retrieves visit logs based on user's RBAC permissions, with filtering and pagination.
+    Retrieves visit logs based on user's RBAC permissions, with optional date filtering and pagination.
     """
-    query = db.query(models.VisitLog)
+    # Базовый запрос с нужными JOIN для фильтрации
+    query = (
+        db.query(models.VisitLog)
+        .join(models.VisitLog.request)
+        .join(models.Request.creator)
+    )
 
-    # Join necessary tables for filtering and eager loading
-    # We need Request for its creator, and Creator for their department.
-    query = query.join(models.VisitLog.request).join(models.Request.creator) # Joining User table (aliased as creator)
-
-    # Apply RBAC
-    if rbac.can_view_all_logs(current_user): # USB, AS, Admin
-        # No additional department/checkpoint filters needed for these roles if they see everything
+    # 1) Полный доступ
+    if rbac.can_view_all_logs(current_user):
         pass
+
+    # 2) KPP-роль — фильтрация по checkpoint_id и статусу Request
     elif current_user.role and current_user.role.code.startswith(constants.KPP_ROLE_PREFIX):
-        kpp_checkpoint_id = rbac.get_request_filters_for_user(db, current_user)
-        if kpp_checkpoint_id is not None:
-            query = query.filter(models.VisitLog.checkpoint_id == kpp_checkpoint_id)
-        else: # Invalid KPP role or no checkpoint ID derivable, return no logs
+        filters: Union[dict, None] = rbac.get_request_filters_for_user(db, current_user)
+        # Ожидаем {'checkpoint_id': int, 'allowed_statuses': List[str]}
+        if not filters or not isinstance(filters, dict):
             return []
-    else: # Must be a manager (Nach. Departamenta, Nach. Upravleniya)
-        allowed_dept_ids = rbac.get_request_filters_for_user(db, current_user)
-        if not allowed_dept_ids:
+        checkpoint_id = filters.get('checkpoint_id')
+        allowed_statuses = filters.get('allowed_statuses', [])
+        if checkpoint_id is None:
             return []
-        # Filter based on the department ID of the creator of the request associated with the visit log
-        # The join query.join(models.VisitLog.request).join(models.Request.creator) makes models.User (creator) available.
-        query = query.filter(models.User.department_id.in_(allowed_dept_ids))
+        query = query.filter(
+            models.VisitLog.checkpoint_id == checkpoint_id,
+            models.Request.status.in_(allowed_statuses)
+        )
 
-    # Apply date filters on VisitLog.check_in_time
+    # 3) Менеджер — по отделам создателей
+    else:
+        dept_filters = rbac.get_request_filters_for_user(db, current_user)
+        # Ожидаем список ID или dict с ключом 'department_ids'
+        if not dept_filters:
+            return []
+        if isinstance(dept_filters, dict):
+            dept_ids = dept_filters.get('department_ids') or []
+        else:
+            dept_ids = dept_filters
+        if not isinstance(dept_ids, list):
+            dept_ids = [dept_ids]
+        if not dept_ids:
+            return []
+        query = query.filter(models.User.department_id.in_(dept_ids))
+
+    # Применяем фильтры по дате
     if start_date:
-        query = query.filter(models.VisitLog.check_in_time >= start_date)
+        start_dt = datetime.combine(start_date, time.min)
+        query = query.filter(models.VisitLog.check_in_time >= start_dt)
     if end_date:
-        # To include the whole end_date, filter up to the start of the next day
-        from datetime import timedelta
-        query = query.filter(models.VisitLog.check_in_time < (end_date + timedelta(days=1)))
+        end_dt = datetime.combine(end_date + timedelta(days=1), time.min)
+        query = query.filter(models.VisitLog.check_in_time < end_dt)
 
-    # Eager loading for response model population
+    # Жадная загрузка для сериализации
     query = query.options(
         selectinload(models.VisitLog.request_person),
         selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.department),
-        selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.role) # Added role for creator
+        selectinload(models.VisitLog.request).selectinload(models.Request.creator).selectinload(models.User.role)
     )
 
-    return query.order_by(models.VisitLog.check_in_time.desc()).offset(skip).limit(limit).all()
+    # Сортировка и пагинация
+    return (
+        query.order_by(models.VisitLog.check_in_time.desc())
+             .offset(skip)
+             .limit(limit)
+             .all()
+    )
 
 
 def update_visit_log(db: Session, visit_log_id: int, visit_log_update: schemas.VisitLogUpdate) -> Optional[models.VisitLog]:

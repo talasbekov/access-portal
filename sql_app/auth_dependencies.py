@@ -121,14 +121,14 @@ class AuthDependencies:
     def get_usb_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
         """Требовать роль УСБ"""
         if not current_user.role or current_user.role.code != constants.USB_ROLE_CODE:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="USB privileges required.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Вы не являетесь сотрудником УСБ!")
         return current_user
 
     @staticmethod
     def get_as_user(current_user: models.User = Depends(get_current_active_user)) -> models.User:
         """Требовать роль АС"""
         if not current_user.role or current_user.role.code != constants.AS_ROLE_CODE:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="AS privileges required.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Вы не являетесь сотрудником АС!")
         return current_user
 
     @staticmethod

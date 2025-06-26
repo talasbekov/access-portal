@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
 
-from .. import crud, models, schemas
+from .. import crud, models, schemas, rbac
 from ..dependencies import get_db
 from ..auth_dependencies import (
     get_current_user,
@@ -81,6 +81,7 @@ async def record_visitor_entry(
     """
     # 1. Verify RequestPerson
     db_request_person = db.query(models.RequestPerson).filter(models.RequestPerson.id == visit_log_in.request_person_id).first()
+
     if not db_request_person:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RequestPerson with ID {visit_log_in.request_person_id} not found.")
 
@@ -105,12 +106,17 @@ async def record_visitor_entry(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Request with ID {visit_log_in.request_id} not found.")
 
     # 3. Validate RequestPerson status
-    if db_request_person.status == models.RequestPersonStatus.REJECTED:
+    if db_request_person.status == models.RequestPersonStatus.DECLINED_USB:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Visitor (RequestPerson ID: {db_request_person.id}) has been rejected and cannot be processed for entry."
         )
-    if db_request_person.status != models.RequestPersonStatus.APPROVED:
+    if db_request_person.status == models.RequestPersonStatus.DECLINED_AS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Visitor (RequestPerson ID: {db_request_person.id}) has been rejected and cannot be processed for entry."
+        )
+    if db_request_person.status != models.RequestPersonStatus.APPROVED_AS:
         # This covers PENDING or any other non-APPROVED status apart from REJECTED
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -151,41 +157,42 @@ async def record_visitor_entry(
     # 7. Create VisitLog
     # The VisitLogCreate schema expects request_id, request_person_id, and checkpoint_id.
 
-    kpp_checkpoint_id = rbac.get_kpp_checkpoint_id_from_user(current_user)
+    kpp_checkpoint_id = rbac.get_request_filters_for_user(db, current_user)
+    print(kpp_checkpoint_id, "kpp_checkpoint_id")
     if kpp_checkpoint_id is None:
         # This log helps identify if role codes are not set up like "KPP-1", "KPP-2", etc.
         print(f"[ERROR] KPP User {current_user.username} (ID: {current_user.id}) could not determine checkpoint ID from role: {current_user.role.code if current_user.role else 'NO_ROLE'}")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="KPP user role does not specify a valid checkpoint number (e.g., KPP-1).")
 
     # Verify this checkpoint_id (derived from KPP user's role) exists in the DB
-    db_checkpoint = crud.get_checkpoint(db, checkpoint_id=kpp_checkpoint_id)
+    checkpoint_id = kpp_checkpoint_id["checkpoint_id"]
+    db_checkpoint = crud.get_checkpoint(db, checkpoint_id=checkpoint_id)
     if not db_checkpoint:
-        print(f"[ERROR] KPP User {current_user.username} (ID: {current_user.id}) - Checkpoint ID {kpp_checkpoint_id} derived from role not found in DB.")
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"KPP's assigned checkpoint (ID: {kpp_checkpoint_id}) is invalid or not found.")
+        print(f"[ERROR] KPP User {current_user.username} (ID: {current_user.id}) - Checkpoint ID {checkpoint_id} derived from role not found in DB.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"KPP's assigned checkpoint (ID: {checkpoint_id}) is invalid or not found.")
 
     # Ensure the request (db_request was fetched earlier) allows entry through this KPP user's checkpoint
-    if not any(cp.id == kpp_checkpoint_id for cp in db_request.checkpoints):
+    if not any(cp.id == checkpoint_id for cp in db_request.checkpoints):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Request ID {db_request.id} does not permit entry through checkpoint {db_checkpoint.name} (KPP user's assigned checkpoint)."
         )
 
     # Validate that the checkpoint_id in the payload matches the KPP user's derived checkpoint_id
-    if visit_log_in.checkpoint_id != kpp_checkpoint_id:
+    if visit_log_in.checkpoint_id != checkpoint_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Provided checkpoint_id {visit_log_in.checkpoint_id} in payload does not match KPP user's assigned checkpoint {kpp_checkpoint_id}."
+            detail=f"Provided checkpoint_id {visit_log_in.checkpoint_id} in payload does not match KPP user's assigned checkpoint {checkpoint_id}."
         )
 
     # All checks passed, create the visit log using the validated payload.
     # visit_log_in already contains request_id, request_person_id, and the (now validated) checkpoint_id.
     created_log = crud.create_visit_log(db=db, visit_log=visit_log_in)
 
-    # (Optional) Update RequestPerson.is_entered status
-    # db_request_person.is_entered = True
-    # db.add(db_request_person)
-    # db.commit()
-    # db.refresh(db_request_person)
+    db_request_person.is_entered = True
+    db.add(db_request_person)
+    db.commit()
+    db.refresh(db_request_person)
 
     print(f"[INFO] KPP User {current_user.username} (ID: {current_user.id}) recorded ENTRY for RequestPerson ID: {created_log.request_person_id}, VisitLog ID: {created_log.id}")
     return created_log
@@ -219,11 +226,11 @@ async def record_visitor_exit(
     updated_log = crud.update_visit_log(db=db, visit_log_id=visit_log_id, visit_log_update=visit_log_update)
 
     # (Optional) Update RequestPerson.is_entered status
-    # db_request_person = crud.db.query(models.RequestPerson).filter(models.RequestPerson.id == db_visit_log.request_person_id).first()
-    # if db_request_person:
-    #    db_request_person.is_entered = False
-    #    db.add(db_request_person)
-    #    db.commit()
+    db_request_person = db.query(models.RequestPerson).filter(models.RequestPerson.id == db_visit_log.request_person_id).first()
+    if db_request_person:
+       db_request_person.is_entered = False
+       db.add(db_request_person)
+       db.commit()
 
     if updated_log is None: # Should not happen if db_visit_log was found
         print(f"[ERROR] KPP User {current_user.username} (ID: {current_user.id}) failed to update VisitLog ID: {visit_log_id} for EXIT.")

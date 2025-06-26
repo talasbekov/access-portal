@@ -325,34 +325,15 @@ async def read_visit_logs_for_request(
         # This means either the request doesn't exist or the current_user doesn't have basic view access to it.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
 
-
-    # Step 3: Apply RBAC checks for visit log history
     allowed = False
     if rbac.can_view_all_logs(current_user):
         allowed = True
 
-    # Check if the current user is the creator of the request as a fallback
-    # This was part of the original simpler check.
     if not allowed and db_request.creator_id == current_user.id:
         allowed = True
 
-    # Check for checkpoint operator role - this was part of the original simpler check for this endpoint.
-    # This specific permission might need to be refined based on whether CP operators should see *all* logs for a request they handle,
-    # or only specific entries they create/manage. For now, retaining similar broad access for CP ops on this request's logs.
     if not allowed and current_user.role and current_user.role.code and current_user.role.code.startswith(KPP_ROLE_PREFIX):
-        # Further check: is this request associated with this checkpoint operator's checkpoint(s)?
-        # This requires knowing the operator's specific checkpoint. For now, if they are any CP operator, allow.
-        # A more robust check would be:
-        # operator_cp_id_str = current_user.role.code[len(KPP_ROLE_PREFIX):]
-        # try:
-        #     operator_cp_id = int(operator_cp_id_str)
-        #     if any(cp.id == operator_cp_id for cp in db_request.checkpoints):
-        #         allowed = True
-        # except ValueError:
-        #     pass # Invalid role code format
-        # For now, any CP operator is allowed if other checks fail. This maintains previous behavior.
         allowed = True
-
 
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view visit logs for this request.")
@@ -378,23 +359,29 @@ async def read_visit_logs_for_request(
 
         request_for_visit_log = schemas.RequestForVisitLog(**request_data) if request_data else None
 
-        user_data = {}
-        if db_log.user: # Ensure user (visitor) object exists
-            user_data = {
-                "id": db_log.user.id,
-                "username": db_log.user.username,
-                "full_name": db_log.user.full_name,
+        request_person_data = {}
+        if db_log.request_person: # Ensure user (visitor) object exists
+            request_person_data = {
+                "id": db_log.request_person.id,
+                "firstname": db_log.request_person.firstname,
+                "lastname": db_log.request_person.lastname,
+                "surname": db_log.request_person.surname,
+                "iin": db_log.request_person.iin,
+                "company": db_log.request_person.company,
+                "is_entered": db_log.request_person.is_entered,
             }
-        user_for_visit_log = schemas.UserForVisitLog(**user_data) if user_data else None
+        request_person_data_for_visit_log = schemas.RequestPersonForVisitLog(**request_person_data) if request_person_data else None
 
         visit_log_response = schemas.VisitLog(
             id=db_log.id,
             request_id=db_log.request_id,
-            user_id=db_log.user_id, # visitor's id
+            request_person_id=db_log.request_person_id, # visitor's id
+            checkpoint_id=db_log.checkpoint_id,
             check_in_time=db_log.check_in_time,
             check_out_time=db_log.check_out_time,
             request=request_for_visit_log,
-            user=user_for_visit_log
+            request_person=request_person_data_for_visit_log,
+            checkpoint=db_log.checkpoint,
         )
         response_visit_logs.append(visit_log_response)
 
@@ -408,37 +395,32 @@ class RequestPersonRejectionPayload(schemas.BaseModel): # Use a common BaseModel
 
 # ------------- Individual RequestPerson Approval/Rejection Endpoints -------------
 
-@router.post("/{request_id}/persons/{person_id}/approve", response_model=schemas.RequestPerson, tags=["Request Persons Actions"])
+@router.post("/{request_id}/persons/{request_person_id}/approve", response_model=schemas.RequestPerson, tags=["Request Persons Actions"])
 async def approve_single_request_person(
     request_id: int,
-    person_id: int,
+    request_person_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_security_officer_user) # DCS, ZD, Admin
 ):
     # Verify person belongs to request
-    db_person = crud.get_request_person(db, person_id)
+    db_person = crud.get_request_person(db, request_person_id)
     if not db_person or db_person.request_id != request_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RequestPerson with ID {person_id} not found in Request {request_id}.")
-
-    # TODO: Add check: Is the main Request in a status that allows individual approvals (e.g., PENDING_USB, PENDING_AS)?
-    # This logic might be complex, e.g. if request is PENDING_DCS, only DCS can approve. If PENDING_ZD, only ZD.
-    # For now, get_security_officer_user ensures the user has one of the high-level roles.
-    # Specific step validation (e.g. DCS can only approve if main request is PENDING_DCS) should be added in CRUD or here.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RequestPerson with ID {request_person_id} not found in Request {request_id}.")
 
     try:
-        approved_person = crud.approve_request_person(db=db, request_person_id=person_id, approver=current_user)
-        print(f"[INFO] User {current_user.username} (ID: {current_user.id}) APPROVED RequestPerson ID: {person_id} for Request ID: {request_id}")
+        approved_person = crud.approve_request_person(db, request_person_id, current_user)
+        print(f"[INFO] User {current_user.username} (ID: {current_user.id}) APPROVED RequestPerson ID: {request_person_id} for Request ID: {request_id}")
         return approved_person
     except crud.ResourceNotFoundException as e: # Catch specific exception from CRUD
-        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to APPROVE RequestPerson ID: {person_id} (Request ID: {request_id}). Reason: {str(e)}")
+        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to APPROVE RequestPerson ID: {request_person_id} (Request ID: {request_id}). Reason: {str(e)}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except HTTPException as e:
-        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to APPROVE RequestPerson ID: {person_id} (Request ID: {request_id}). HTTP Reason: {e.detail}")
+        print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to APPROVE RequestPerson ID: {request_person_id} (Request ID: {request_id}). HTTP Reason: {e.detail}")
         raise e
-    except Exception as e:
-        # Log error e
-        print(f"Unexpected error in approve_single_request_person: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+    # except Exception as e:
+    #     # Log error e
+    #     print(f"Unexpected error in approve_single_request_person: {e}")
+    #     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
 
 @router.post("/{request_id}/persons/{person_id}/reject", response_model=schemas.RequestPerson, tags=["Request Persons Actions"])
@@ -474,10 +456,10 @@ async def reject_single_request_person(
     except HTTPException as e: # Handles the 400 from crud if reason is empty there too
         print(f"[WARN] User {current_user.username} (ID: {current_user.id}) failed to REJECT RequestPerson ID: {person_id} (Request ID: {request_id}). HTTP Reason: {e.detail}")
         raise e
-    except Exception as e:
-        # Log error e
-        print(f"[ERROR] User {current_user.username} (ID: {current_user.id}) encountered an unexpected error rejecting RequestPerson ID: {person_id} (Request ID: {request_id}). Error: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+    # except Exception as e:
+    #     # Log error e
+    #     print(f"[ERROR] User {current_user.username} (ID: {current_user.id}) encountered an unexpected error rejecting RequestPerson ID: {person_id} (Request ID: {request_id}). Error: {e}")
+    #     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
 # ------------- USB Full Request Approval/Rejection Endpoints -------------
 
@@ -488,7 +470,7 @@ async def usb_approve_entire_request(
     current_user: models.User = Depends(get_usb_user) # Specific USB role needed
 ):
     try:
-        updated_request = crud.approve_request_usb(db=db, request_id=request_id, usb_user=current_user)
+        updated_request = crud.approve_request_usb(db, request_id, current_user)
         print(f"[INFO] USB User {current_user.username} (ID: {current_user.id}) APPROVED entire Request ID: {request_id}. New status: {updated_request.status}")
         return updated_request
     except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
@@ -513,8 +495,9 @@ async def usb_reject_entire_request(
 ):
     if not payload.rejection_reason or len(payload.rejection_reason.strip()) == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason cannot be empty.")
+    print(payload.rejection_reason)
     try:
-        updated_request = crud.decline_request_usb(db=db, request_id=request_id, usb_user=current_user, reason=payload.rejection_reason)
+        updated_request = crud.decline_request_usb(db, request_id, current_user, reason=payload.rejection_reason)
         print(f"[INFO] USB User {current_user.username} (ID: {current_user.id}) REJECTED entire Request ID: {request_id} with reason: '{payload.rejection_reason}'. New status: {updated_request.status}")
         return updated_request
     except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
@@ -525,9 +508,9 @@ async def usb_reject_entire_request(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except HTTPException as e: # Catches 400 from CRUD if reason is empty there too
         raise e
-    except Exception as e:
-        print(f"[ERROR] USB User {current_user.username} (ID: {current_user.id}) - unexpected error REJECT ALL Request ID: {request_id}. Error: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+    # except Exception as e:
+    #     print(f"[ERROR] USB User {current_user.username} (ID: {current_user.id}) - unexpected error REJECT ALL Request ID: {request_id}. Error: {e}")
+    #     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
 # ------------- AS Full Request Approval/Rejection Endpoints -------------
 
@@ -538,7 +521,7 @@ async def as_approve_entire_request(
     current_user: models.User = Depends(get_as_user) # Specific AS role needed
 ):
     try:
-        updated_request = crud.approve_request_as(db=db, request_id=request_id, as_user=current_user)
+        updated_request = crud.approve_request_as(db, request_id, current_user)
         print(f"[INFO] AS User {current_user.username} (ID: {current_user.id}) APPROVED entire Request ID: {request_id}. New status: {updated_request.status}")
         return updated_request
     except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:
@@ -564,7 +547,7 @@ async def as_reject_entire_request(
     if not payload.rejection_reason or len(payload.rejection_reason.strip()) == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rejection reason cannot be empty.")
     try:
-        updated_request = crud.decline_request_as(db=db, request_id=request_id, as_user=current_user, reason=payload.rejection_reason)
+        updated_request = crud.decline_request_as(db, request_id, current_user, payload.rejection_reason)
         print(f"[INFO] AS User {current_user.username} (ID: {current_user.id}) REJECTED entire Request ID: {request_id} with reason: '{payload.rejection_reason}'. New status: {updated_request.status}")
         return updated_request
     except (crud.ResourceNotFoundException, crud.InvalidRequestStateException) as e:

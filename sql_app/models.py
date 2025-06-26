@@ -34,9 +34,13 @@ class DepartmentType(enum.Enum):
     UNIT = "UNIT"
 
 class RequestPersonStatus(enum.Enum):
-    PENDING = "PENDING"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
+    PENDING_USB = "PENDING_USB"  # Ожидает одобрения УСБ
+    APPROVED_USB = "APPROVED_USB"  # Одобрено УСБ
+    DECLINED_USB = "DECLINED_USB"  # Отклонено УСБ
+
+    PENDING_AS = "PENDING_AS"  # Ожидает одобрения АС
+    APPROVED_AS = "APPROVED_AS"  # Одобрено АС (финальное одобрение)
+    DECLINED_AS = "DECLINED_AS"
 
 class NationalityType(enum.Enum):
     KZ = "KZ"       # Kazakhstan Citizen
@@ -191,10 +195,6 @@ class RequestPerson(Base):
     nationality = Column(Enum(NationalityType), nullable=False, server_default=NationalityType.KZ.value)
     iin = Column(String(12), nullable=True, index=True) # Indexed for potential lookups
 
-    # For foreign citizens
-    # doc_type can be 'PASSPORT', 'VISA', etc.
-    # The existing 'citizenship' field can store the country name for foreign nationals.
-    # The existing 'doc_number', 'doc_start_date', 'doc_end_date' will be used for foreign documents.
     doc_type = Column(String, nullable=True) # Nullable if KZ and IIN is provided
     doc_number = Column(String, nullable=True, index=True) # Nullable if KZ and IIN is provided, indexed
     doc_start_date = Column(Date, nullable=True) # Nullable if KZ
@@ -204,7 +204,7 @@ class RequestPerson(Base):
     citizenship = Column(String, nullable=False) # For foreign: country name. For KZ: "Kazakhstan"
     company = Column(String, nullable=False)
     is_entered = Column(Boolean, nullable=False, default=False)
-    status = Column(Enum(RequestPersonStatus), nullable=False, server_default=RequestPersonStatus.PENDING.value, default=RequestPersonStatus.PENDING)
+    status = Column(Enum(RequestPersonStatus), nullable=False, server_default=RequestPersonStatus.PENDING_USB.value, default=RequestPersonStatus.PENDING_USB)
     rejection_reason = Column(Text, nullable=True)
 
     request = relationship("Request", back_populates="request_persons")

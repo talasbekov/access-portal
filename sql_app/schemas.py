@@ -39,9 +39,13 @@ class RequestStatusEnum(str, enum.Enum):
     CLOSED = "CLOSED"                # Заявка закрыта/отменена
 
 class RequestPersonStatusEnum(str, enum.Enum):
-    PENDING = "PENDING"
-    APPROVED = "APPROVED"
-    REJECTED = "REJECTED"
+    PENDING_USB = "PENDING_USB"  # Ожидает одобрения УСБ
+    APPROVED_USB = "APPROVED_USB"  # Одобрено УСБ
+    DECLINED_USB = "DECLINED_USB"  # Отклонено УСБ
+
+    PENDING_AS = "PENDING_AS"  # Ожидает одобрения АС
+    APPROVED_AS = "APPROVED_AS"  # Одобрено АС (финальное одобрение)
+    DECLINED_AS = "DECLINED_AS"
 
 class NationalityTypeEnum(str, enum.Enum):
     KZ = "KZ"
@@ -215,7 +219,7 @@ class RequestPersonBase(BaseModel):
     citizenship: str # Country name for FOREIGN, "Kazakhstan" for KZ
     company: str
     is_entered: Optional[bool] = False
-    status: RequestPersonStatusEnum = RequestPersonStatusEnum.PENDING
+    status: RequestPersonStatusEnum = RequestPersonStatusEnum.PENDING_USB
     rejection_reason: Optional[str] = None
 
     # Changed to pre=True to ensure nationality is available
@@ -549,13 +553,12 @@ class RequestPersonForVisitLog(BaseModel):
     firstname: str
     lastname: str
     surname: Optional[str] = None
-    company: Optional[str] = None
-    status: Optional[RequestPersonStatusEnum] = None # To show status in logs
-    rejection_reason: Optional[str] = None          # To show rejection reason in logs
-
+    iin: Optional[str] = None
+    company: str
+    is_entered: bool
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 # Simplified Request schema for VisitLog
 class RequestForVisitLog(BaseModel):
@@ -574,7 +577,7 @@ class VisitLogBase(BaseModel):
     request_id: int
     request_person_id: int
     checkpoint_id: Optional[int] = None # Made optional here, but will be required in VisitLogCreate by KPP
-    check_out_time: Optional[datetime] = None
+    check_in_time: Optional[datetime] = None
 
 class VisitLogCreate(VisitLogBase):
     checkpoint_id: int # KPP must provide this at entry
@@ -585,7 +588,6 @@ class VisitLogUpdate(BaseModel):
 
 class VisitLogInDBBase(VisitLogBase):
     id: int
-    check_in_time: datetime
     checkpoint_id: int # Should be non-nullable in DB after KPP provides it
 
     class Config:
@@ -595,10 +597,12 @@ class SimplifiedCheckpointForVisitLog(BaseModel):
     id: int
     name: str
     code: str
+
     class Config:
         from_attributes = True
 
 class VisitLog(VisitLogInDBBase):
+    id: int
     request: Optional[RequestForVisitLog] = None
     request_person: Optional[RequestPersonForVisitLog] = None
     checkpoint: Optional[SimplifiedCheckpointForVisitLog] = None # To show checkpoint details
