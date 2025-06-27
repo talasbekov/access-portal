@@ -113,14 +113,19 @@ def get_request_filters_for_user(db: Session, user: models.User) -> Dict:
     filters = {}
 
     if can_view_all_requests(user):
-        filters["unrestricted"] = True
+        filters["is_unrestricted"] = True
         return filters
 
     # Начальники видят заявки своих подразделений
-    if is_nach_departamenta(user) or is_nach_upravleniya(user):
+    if is_nach_departamenta(user):
+        # Начальник департамента видит заявки всех управлений своего департамента
         dept_ids = get_user_department_scope(db, user)
         if dept_ids:
-            filters["creator_department_ids"] = dept_ids
+            filters["department_ids"] = dept_ids
+    elif is_nach_upravleniya(user):
+        # Начальник управления видит заявки только своего управления
+        if user.department_id:
+            filters["department_ids"] = [user.department_id]
 
     # КПП видят только одобренные заявки для своего КПП
     elif is_kpp(user):
