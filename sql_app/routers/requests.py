@@ -119,8 +119,8 @@ async def create_request_endpoint(
         raise e
     except Exception as e:
         print(f"Unexpected error in create_request_endpoint: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Internal server error during request creation.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Вы пытаетесь создать заявку на посетителя который находиться в черном списке!")
 
 
 # Эндпоинт обновления теперь работает только для заявок в процессе одобрения

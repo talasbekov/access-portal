@@ -1253,8 +1253,8 @@ def get_audit_logs_filtered(
 
     query = db.query(models.AuditLog).join(models.AuditLog.actor, isouter=True).join(models.User.department, isouter=True)
 
-    if not rbac.can_view_all_audit_logs(current_user):
-        allowed_actor_dept_ids = rbac.get_allowed_actor_department_ids_for_audit_logs(db, current_user)
+    if not rbac.can_view_all_logs(current_user):
+        allowed_actor_dept_ids = rbac.get_request_filters_for_user(db, current_user)
         if not allowed_actor_dept_ids: # Empty list means cannot see any by this rule
             return []
 
@@ -1266,7 +1266,7 @@ def get_audit_logs_filtered(
         query = query.filter(models.User.department_id.in_(allowed_actor_dept_ids))
 
     # If admin/usb/as provided a specific department_id to filter by
-    if actor_department_id and rbac.can_view_all_audit_logs(current_user):
+    if actor_department_id and rbac.can_view_all_logs(current_user):
         query = query.filter(models.User.department_id == actor_department_id)
 
     # Date filters

@@ -244,8 +244,8 @@ async def record_visitor_exit(
 async def read_visit_logs(
     skip: int = 0,
     limit: int = 100,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
+    check_in: Optional[date] = None,
+    check_out: Optional[date] = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_active_user)
 ):
@@ -263,8 +263,8 @@ async def read_visit_logs(
         current_user=current_user,
         skip=skip,
         limit=limit,
-        start_date=start_date,
-        end_date=end_date
+        start_date=check_in,
+        end_date=check_out
     )
 
     # The schemas.VisitLog already defines how to serialize from the model,

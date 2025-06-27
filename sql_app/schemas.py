@@ -603,6 +603,7 @@ class SimplifiedCheckpointForVisitLog(BaseModel):
 
 class VisitLog(VisitLogInDBBase):
     id: int
+    check_out_time: Optional[datetime] = None
     request: Optional[RequestForVisitLog] = None
     request_person: Optional[RequestPersonForVisitLog] = None
     checkpoint: Optional[SimplifiedCheckpointForVisitLog] = None # To show checkpoint details

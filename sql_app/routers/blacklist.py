@@ -10,7 +10,7 @@ from .. import crud, models, schemas
 from ..dependencies import get_db # Only get_db
 from ..auth import decode_token as auth_decode_token # For JWT decoding
 from ..auth_dependencies import (
-    get_current_active_user,
+    get_current_active_user, get_usb_user,
 )
 
 load_dotenv()
@@ -89,7 +89,7 @@ async def read_all_blacklist_entries(
 async def create_blacklist_entry_endpoint(
     entry_in: schemas.BlackListCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+    current_user: models.User = Depends(get_usb_user)
 ):
     """
     Create a new blacklist entry.

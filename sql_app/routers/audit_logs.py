@@ -43,7 +43,7 @@ async def read_audit_logs_endpoint(
         return audit_logs
     except HTTPException as e: # Catch permission errors from CRUD
         raise e
-    except Exception as e:
-        # Log this error properly in a real application
-        print(f"Unexpected error in read_audit_logs_endpoint: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error retrieving audit logs.")
+    # except Exception as e:
+    #     # Log this error properly in a real application
+    #     print(f"Unexpected error in read_audit_logs_endpoint: {e}")
+    #     raise HTTPException(status_code=500, detail="Internal server error retrieving audit logs.")
