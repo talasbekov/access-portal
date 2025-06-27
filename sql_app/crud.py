@@ -369,48 +369,64 @@ def reject_request_person(db: Session, request_person_id: int, reason: str, appr
                      action="REJECT", data={"request_id": db_person.request_id, "new_status": "REJECTED", "reason": reason})
     return db_person
 
+
 def _finalize_request_if_all_persons_processed(db: Session, request_id: int, approver: models.User):
     """
     Автоматически переводит статус Request, когда все связанные RequestPerson обработаны для данной роли.
     """
+    print(f"\n[DEBUG] === _finalize_request_if_all_persons_processed called ===")
+    print(f"[DEBUG] Request ID: {request_id}")
+    print(f"[DEBUG] Approver: {approver.username} (Role: {approver.role.code if approver.role else 'NO_ROLE'})")
+
     if rbac.is_usb(approver):
+        print(f"[DEBUG] === USB PROCESSING ===")
         # УСБ обрабатывает всех посетителей
         total_persons = db.query(func.count(models.RequestPerson.id)) \
-            .filter(models.RequestPerson.request_id == request_id) \
-            .scalar() or 0
+                            .filter(models.RequestPerson.request_id == request_id) \
+                            .scalar() or 0
 
         # Количество обработанных УСБ (одобренных или отклоненных)
         usb_processed = db.query(func.count(models.RequestPerson.id)) \
-            .filter(
-                models.RequestPerson.request_id == request_id,
-                models.RequestPerson.status.in_([
-                    models.RequestPersonStatus.APPROVED_USB,
-                    models.RequestPersonStatus.DECLINED_USB
-                ])
-            ).scalar() or 0
+                            .filter(
+            models.RequestPerson.request_id == request_id,
+            models.RequestPerson.status.in_([
+                models.RequestPersonStatus.APPROVED_USB,
+                models.RequestPersonStatus.DECLINED_USB
+            ])
+        ).scalar() or 0
+
+        print(f"[DEBUG] Total persons: {total_persons}, USB processed: {usb_processed}")
 
         # Если УСБ обработал всех посетителей
         if usb_processed == total_persons:
+            print(f"[DEBUG] All persons processed by USB")
             # Количество одобренных УСБ
             usb_approved = db.query(func.count(models.RequestPerson.id)) \
-                .filter(
-                    models.RequestPerson.request_id == request_id,
-                    models.RequestPerson.status == models.RequestPersonStatus.APPROVED_USB
-                ).scalar() or 0
+                               .filter(
+                models.RequestPerson.request_id == request_id,
+                models.RequestPerson.status == models.RequestPersonStatus.APPROVED_USB
+            ).scalar() or 0
+
+            print(f"[DEBUG] USB approved count: {usb_approved}")
 
             # Определяем новый статус заявки
             if usb_approved == 0:
                 # Все отклонены УСБ
                 new_status = schemas.RequestStatusEnum.DECLINED_USB.value
+                print(f"[DEBUG] All declined by USB -> {new_status}")
             else:
                 # Есть одобренные УСБ (частично или полностью)
                 new_status = schemas.RequestStatusEnum.APPROVED_USB.value
+                print(f"[DEBUG] Some approved by USB -> {new_status}")
 
             # Обновляем статус заявки
             request_obj = db.get(models.Request, request_id)
+            old_status = request_obj.status
             request_obj.status = new_status
             db.commit()
             db.refresh(request_obj)
+
+            print(f"[DEBUG] USB: Request status updated from {old_status} to {request_obj.status}")
 
             create_audit_log(
                 db,
@@ -420,8 +436,11 @@ def _finalize_request_if_all_persons_processed(db: Session, request_id: int, app
                 action="AUTO_STATUS_UPDATE_USB",
                 data={"new_status": new_status, "approved_count": usb_approved, "total_count": total_persons}
             )
+        else:
+            print(f"[DEBUG] USB: Not all persons processed yet: {usb_processed}/{total_persons}")
 
     elif rbac.is_as(approver):
+        print(f"[DEBUG] === AS PROCESSING ===")
         # Получаем текущую заявку для проверки её статуса
         request_obj = db.get(models.Request, request_id)
         if not request_obj:
@@ -432,28 +451,29 @@ def _finalize_request_if_all_persons_processed(db: Session, request_id: int, app
 
         # Общее количество посетителей в заявке
         total_persons = db.query(func.count(models.RequestPerson.id)) \
-            .filter(models.RequestPerson.request_id == request_id) \
-            .scalar() or 0
+                            .filter(models.RequestPerson.request_id == request_id) \
+                            .scalar() or 0
 
         print(f"[DEBUG] Total persons in request: {total_persons}")
 
         # Получаем детальную информацию о статусах всех посетителей
         all_persons = db.query(models.RequestPerson).filter(models.RequestPerson.request_id == request_id).all()
+        print(f"[DEBUG] === ALL PERSONS STATUS ===")
         for person in all_persons:
-            print(f"[DEBUG] Person {person.id}: {person.firstname} {person.lastname} - Status: {person.status}")
+            print(f"[DEBUG] Person {person.id}: {person.firstname} {person.lastname} - Status: {person.status.value}")
 
         if request_obj.status == schemas.RequestStatusEnum.PENDING_AS.value:
-            print(f"[DEBUG] Processing PENDING_AS flow")
+            print(f"[DEBUG] Processing PENDING_AS flow (direct to AS)")
             # Заявка пришла напрямую к АС (краткосрочная, <= 3 граждан КЗ)
             # АС должен обработать всех посетителей
             as_processed = db.query(func.count(models.RequestPerson.id)) \
-                .filter(
-                    models.RequestPerson.request_id == request_id,
-                    models.RequestPerson.status.in_([
-                        models.RequestPersonStatus.APPROVED_AS,
-                        models.RequestPersonStatus.DECLINED_AS
-                    ])
-                ).scalar() or 0
+                               .filter(
+                models.RequestPerson.request_id == request_id,
+                models.RequestPerson.status.in_([
+                    models.RequestPersonStatus.APPROVED_AS,
+                    models.RequestPersonStatus.DECLINED_AS
+                ])
+            ).scalar() or 0
 
             print(f"[DEBUG] AS processed: {as_processed}, Total: {total_persons}")
 
@@ -462,10 +482,10 @@ def _finalize_request_if_all_persons_processed(db: Session, request_id: int, app
                 print(f"[DEBUG] All persons processed by AS - updating request status")
                 # Количество одобренных АС
                 as_approved = db.query(func.count(models.RequestPerson.id)) \
-                    .filter(
-                        models.RequestPerson.request_id == request_id,
-                        models.RequestPerson.status == models.RequestPersonStatus.APPROVED_AS
-                    ).scalar() or 0
+                                  .filter(
+                    models.RequestPerson.request_id == request_id,
+                    models.RequestPerson.status == models.RequestPersonStatus.APPROVED_AS
+                ).scalar() or 0
 
                 print(f"[DEBUG] AS approved count: {as_approved}")
 
@@ -473,19 +493,20 @@ def _finalize_request_if_all_persons_processed(db: Session, request_id: int, app
                 if as_approved == 0:
                     # АС отклонил всех посетителей
                     new_status = schemas.RequestStatusEnum.DECLINED_AS.value
+                    print(f"[DEBUG] All declined by AS -> {new_status}")
                 else:
                     # АС одобрил хотя бы одного посетителя
                     new_status = schemas.RequestStatusEnum.APPROVED_AS.value
-
-                print(f"[DEBUG] New request status: {new_status}")
+                    print(f"[DEBUG] Some approved by AS -> {new_status}")
 
                 # Обновляем статус заявки
+                old_status = request_obj.status
                 request_obj.status = new_status
                 db.add(request_obj)
                 db.commit()
                 db.refresh(request_obj)
 
-                print(f"[DEBUG] Request status updated successfully to: {request_obj.status}")
+                print(f"[DEBUG] AS DIRECT: Request status updated from {old_status} to {request_obj.status}")
 
                 create_audit_log(
                     db,
@@ -504,74 +525,114 @@ def _finalize_request_if_all_persons_processed(db: Session, request_id: int, app
                 print(f"[DEBUG] Not all persons processed yet: {as_processed}/{total_persons}")
 
         elif request_obj.status == schemas.RequestStatusEnum.APPROVED_USB.value:
-            print(f"[DEBUG] Processing APPROVED_USB flow")
+            print(f"[DEBUG] Processing APPROVED_USB flow (via USB)")
             # Заявка пришла через УСБ
-            # АС обрабатывает только тех, кого УСБ одобрил
-            usb_approved_persons = db.query(func.count(models.RequestPerson.id)) \
-                .filter(
-                    models.RequestPerson.request_id == request_id,
-                    models.RequestPerson.status == models.RequestPersonStatus.APPROVED_USB
-                ).scalar() or 0
+
+            # ПРАВИЛЬНЫЙ подсчет: УСБ одобрил тех, кто сейчас APPROVED_USB или уже обработан АС
+            # Получаем количество посетителей, которых УСБ изначально одобрил
+            usb_originally_approved = db.query(func.count(models.RequestPerson.id)) \
+                                          .filter(
+                models.RequestPerson.request_id == request_id,
+                models.RequestPerson.status.in_([
+                    models.RequestPersonStatus.APPROVED_USB,  # Еще не обработаны АС
+                    models.RequestPersonStatus.APPROVED_AS,  # Одобрены АС
+                    models.RequestPersonStatus.DECLINED_AS  # Отклонены АС
+                ])
+            ).scalar() or 0
+
+            # Получаем количество посетителей, отклоненных УСБ (они не должны обрабатываться АС)
+            usb_declined_persons = db.query(func.count(models.RequestPerson.id)) \
+                                       .filter(
+                models.RequestPerson.request_id == request_id,
+                models.RequestPerson.status == models.RequestPersonStatus.DECLINED_USB
+            ).scalar() or 0
 
             # Получаем количество посетителей, обработанных АС
             as_processed = db.query(func.count(models.RequestPerson.id)) \
-                .filter(
-                    models.RequestPerson.request_id == request_id,
-                    models.RequestPerson.status.in_([
-                        models.RequestPersonStatus.APPROVED_AS,
-                        models.RequestPersonStatus.DECLINED_AS
-                    ])
-                ).scalar() or 0
+                               .filter(
+                models.RequestPerson.request_id == request_id,
+                models.RequestPerson.status.in_([
+                    models.RequestPersonStatus.APPROVED_AS,
+                    models.RequestPersonStatus.DECLINED_AS
+                ])
+            ).scalar() or 0
 
-            print(f"[DEBUG] USB approved: {usb_approved_persons}, AS processed: {as_processed}")
+            print(f"[DEBUG] USB originally approved: {usb_originally_approved}, USB declined: {usb_declined_persons}")
+            print(f"[DEBUG] AS processed: {as_processed}")
+            print(f"[DEBUG] Expected: AS should process {usb_originally_approved} persons")
 
-            # Если АС обработал всех одобренных УСБ посетителей
-            if as_processed == usb_approved_persons and usb_approved_persons > 0:
-                print(f"[DEBUG] All USB-approved persons processed by AS - updating request status")
+            # АС должен обработать всех изначально одобренных УСБ посетителей
+            # Но статус заявки обновляется, когда АС принял окончательное решение
+
+            # Проверяем, есть ли решения АС
+            if as_processed > 0:
+                print(f"[DEBUG] AS has processed some persons - checking final status")
+
                 # Количество одобренных АС
                 as_approved = db.query(func.count(models.RequestPerson.id)) \
-                    .filter(
-                        models.RequestPerson.request_id == request_id,
-                        models.RequestPerson.status == models.RequestPersonStatus.APPROVED_AS
-                    ).scalar() or 0
+                                  .filter(
+                    models.RequestPerson.request_id == request_id,
+                    models.RequestPerson.status == models.RequestPersonStatus.APPROVED_AS
+                ).scalar() or 0
 
-                print(f"[DEBUG] AS approved count: {as_approved}")
+                # Количество отклоненных АС
+                as_declined = db.query(func.count(models.RequestPerson.id)) \
+                                  .filter(
+                    models.RequestPerson.request_id == request_id,
+                    models.RequestPerson.status == models.RequestPersonStatus.DECLINED_AS
+                ).scalar() or 0
 
-                # Определяем новый статус заявки
-                if as_approved == 0:
-                    # АС отклонил всех одобренных УСБ посетителей
-                    new_status = schemas.RequestStatusEnum.DECLINED_AS.value
+                print(f"[DEBUG] AS approved: {as_approved}, AS declined: {as_declined}")
+
+                # Если АС обработал всех изначально одобренных УСБ посетителей
+                if as_processed == usb_originally_approved:
+                    print(f"[DEBUG] All USB-originally-approved persons processed by AS - updating request status")
+
+                    # Определяем новый статус заявки
+                    if as_approved == 0:
+                        # АС отклонил всех одобренных УСБ посетителей
+                        new_status = schemas.RequestStatusEnum.DECLINED_AS.value
+                        print(f"[DEBUG] All USB-approved declined by AS -> {new_status}")
+                    else:
+                        # АС одобрил хотя бы одного посетителя
+                        new_status = schemas.RequestStatusEnum.APPROVED_AS.value
+                        print(f"[DEBUG] Some USB-approved approved by AS -> {new_status}")
+
+                    # Обновляем статус заявки
+                    old_status = request_obj.status
+                    request_obj.status = new_status
+                    db.add(request_obj)
+                    db.commit()
+                    db.refresh(request_obj)
+
+                    print(f"[DEBUG] AS VIA USB: Request status updated from {old_status} to {request_obj.status}")
+
+                    create_audit_log(
+                        db,
+                        actor_id=approver.id,
+                        entity="request",
+                        entity_id=request_id,
+                        action="AUTO_STATUS_UPDATE_AS_AFTER_USB",
+                        data={
+                            "new_status": new_status,
+                            "as_approved_count": as_approved,
+                            "as_declined_count": as_declined,
+                            "usb_originally_approved_count": usb_originally_approved,
+                            "usb_declined_count": usb_declined_persons,
+                            "flow": "via_usb"
+                        }
+                    )
                 else:
-                    # АС одобрил хотя бы одного посетителя
-                    new_status = schemas.RequestStatusEnum.APPROVED_AS.value
-
-                print(f"[DEBUG] New request status: {new_status}")
-
-                # Обновляем статус заявки
-                request_obj.status = new_status
-                db.add(request_obj)
-                db.commit()
-                db.refresh(request_obj)
-
-                print(f"[DEBUG] Request status updated successfully to: {request_obj.status}")
-
-                create_audit_log(
-                    db,
-                    actor_id=approver.id,
-                    entity="request",
-                    entity_id=request_id,
-                    action="AUTO_STATUS_UPDATE_AS_AFTER_USB",
-                    data={
-                        "new_status": new_status,
-                        "as_approved_count": as_approved,
-                        "usb_approved_count": usb_approved_persons,
-                        "flow": "via_usb"
-                    }
-                )
+                    print(f"[DEBUG] AS still processing: {as_processed}/{usb_originally_approved} completed")
             else:
-                print(f"[DEBUG] Not ready to update: as_processed={as_processed}, usb_approved_persons={usb_approved_persons}")
+                print(f"[DEBUG] AS hasn't processed any USB-approved persons yet")
         else:
             print(f"[DEBUG] Request status {request_obj.status} not handled for AS processing")
+    else:
+        print(f"[DEBUG] Approver role {approver.role.code if approver.role else 'NO_ROLE'} not handled")
+
+    print(f"[DEBUG] === _finalize_request_if_all_persons_processed finished ===\n")
+
 
 # ------------- Request CRUD (Modified) -------------
 
