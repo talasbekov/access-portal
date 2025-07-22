@@ -687,6 +687,45 @@ def create_request(db: Session, request_in: schemas.RequestCreate, creator: mode
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Только начальники управлений, департаментов или администраторы могут создавать краткосрочные заявки."
             )
+
+        # Проверка продолжительности заявки
+        if request_in.end_date < request_in.start_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Конечная дата не может быть раньше начальной даты."
+            )
+
+        if request_in.end_date - request_in.start_date > timedelta(days=1):
+            if request_in.duration != RequestDuration.LONG_TERM:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Если период заявки больше одного дня, необходимо выбрать тип 'Долгосрочная'."
+                )
+
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+
+        # Проверка по всем лицам, указанным в заявке
+        for person_in in request_in.request_persons:
+            if not person_in.iin:
+                continue  # Пропустить, если ИИН не указан
+
+            recent_requests_count = (
+                db.query(func.count(models.Request.id))
+                .join(models.RequestPerson)
+                .filter(
+                    models.RequestPerson.iin == person_in.iin,
+                    models.Request.duration == RequestDuration.SHORT_TERM,
+                    models.Request.created_at >= thirty_days_ago
+                )
+                .scalar()
+            )
+            print(recent_requests_count, "количество заходов")
+
+            if recent_requests_count >= 3:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Для ИИН {person_in.iin} превышен лимит разовых заявок за последние 30 дней. Подайте долгосрочную."
+                )
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный тип заявки.")
 

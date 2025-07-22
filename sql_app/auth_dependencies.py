@@ -54,8 +54,8 @@ class AuthDependencies:
         return user
 
     @staticmethod
-    def get_current_active_user(  # Убрали async здесь
-        current_user: models.User = Depends(get_current_user)  # Теперь правильная зависимость
+    def get_current_active_user(
+        current_user: models.User = Depends(get_current_user)
     ) -> models.User:
         """Получить текущего активного пользователя"""
         if not current_user.is_active:
@@ -66,8 +66,8 @@ class AuthDependencies:
         return current_user
 
     @staticmethod
-    def get_admin_user(  # Убрали async здесь
-        current_user: models.User = Depends(get_current_active_user)  # Правильная зависимость
+    def get_admin_user(
+        current_user: models.User = Depends(get_current_active_user)
     ) -> models.User:
         """Требовать роль администратора"""
         # from .rbac import is_admin # is_admin likely uses constants.ADMIN_ROLE_CODE

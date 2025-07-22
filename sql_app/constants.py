@@ -3,18 +3,19 @@
 
 # Роли системы
 ADMIN_ROLE_CODE = "admin"
-NACH_DEPARTAMENTA_ROLE_CODE = "nach_departamenta"  # Начальник департамента
-NACH_UPRAVLENIYA_ROLE_CODE = "nach_upravleniya"    # Начальник управления
+NACH_DEPARTAMENTA_ROLE_CODE = "nach_departamenta"   # Начальник департамента
+NACH_UPRAVLENIYA_ROLE_CODE = "nach_upravleniya"     # Начальник управления
 USB_ROLE_CODE = "usb"                               # УСБ
 AS_ROLE_CODE = "as"                                 # АС
-KPP_ROLE_PREFIX = "KPP-"                           # Префикс для ролей КПП
+AS_EMPLOYEE_ROLE_CODE = "as_employee"               # АС сотрудник
+KPP_ROLE_PREFIX = "KPP-"                            # Префикс для ролей КПП
 EMPLOYEE_ROLE_CODE = "employee"                     # Обычный сотрудник
 
 # Типы подразделений
-COMPANY = "COMPANY"        # Организация
-DEPARTMENT = "DEPARTMENT"  # Департамент
-DIVISION = "DIVISION"      # Управление
-UNIT = "UNIT"             # Отдел
+COMPANY = "COMPANY"         # Организация
+DEPARTMENT = "DEPARTMENT"   # Департамент
+DIVISION = "DIVISION"       # Управление
+UNIT = "UNIT"               # Отдел
 
 # Статусы заявок
 PENDING_USB = "PENDING_USB"      # Ожидает одобрения УСБ

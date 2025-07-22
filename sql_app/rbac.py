@@ -83,7 +83,8 @@ def can_view_all_requests(user: models.User) -> bool:
     return user.role and user.role.code in [
         constants.ADMIN_ROLE_CODE,
         constants.USB_ROLE_CODE,
-        constants.AS_ROLE_CODE
+        constants.AS_ROLE_CODE,
+        constants.AS_EMPLOYEE_ROLE_CODE
     ]
 
 
@@ -92,7 +93,8 @@ def can_view_all_logs(user: models.User) -> bool:
     return user.role and user.role.code in [
         constants.ADMIN_ROLE_CODE,
         constants.USB_ROLE_CODE,
-        constants.AS_ROLE_CODE
+        constants.AS_ROLE_CODE,
+        constants.AS_EMPLOYEE_ROLE_CODE
     ]
 
 
