@@ -5,7 +5,7 @@
 import os
 
 # Устанавливаем переменную окружения для использования SQLite
-os.environ['DATABASE_URL'] = 'sqlite:///./test_fixed.db'
+os.environ["DATABASE_URL"] = "sqlite:///./test_fixed.db"
 
 print("🔧 Тестирование после исправления JSONB...")
 
@@ -54,7 +54,11 @@ try:
 
     with get_db_context() as db:
         # Проверяем, что таблица audit_logs создана
-        result = db.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='audit_logs'")).fetchone()
+        result = db.execute(
+            text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_logs'"
+            )
+        ).fetchone()
         if result:
             print("✅ Таблица audit_logs создана")
 
@@ -78,7 +82,7 @@ try:
             entity="test",
             entity_id=1,
             action="TEST",
-            data={"test_key": "test_value", "number": 123}
+            data={"test_key": "test_value", "number": 123},
         )
         db.add(test_log)
         db.commit()

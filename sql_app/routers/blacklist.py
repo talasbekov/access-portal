@@ -2,21 +2,22 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response
-from fastapi.security import OAuth2PasswordBearer # Added
-from jose import JWTError, jwt # Added
+from fastapi.security import OAuth2PasswordBearer  # Added
+from jose import JWTError, jwt  # Added
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 from .. import crud, models, schemas
-from ..dependencies import get_db # Only get_db
-from ..auth import decode_token as auth_decode_token # For JWT decoding
+from ..dependencies import get_db  # Only get_db
+from ..auth import decode_token as auth_decode_token  # For JWT decoding
 from ..auth_dependencies import (
-    get_current_active_user, get_usb_user,
+    get_current_active_user,
+    get_usb_user,
 )
 
 load_dotenv()
 
-SECRET_KEY = os.getenv('SECRET_KEY')
-ALGORITHM = os.getenv('ALGORITHM')
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
 
 if not SECRET_KEY or not ALGORITHM:
     print("CRITICAL WARNING in blacklist.py: SECRET_KEY or ALGORITHM not found.")
@@ -28,9 +29,12 @@ router = APIRouter(
 )
 
 # --- Real Authentication Logic (Locally Defined) ---
-oauth2_scheme_bl = OAuth2PasswordBearer(tokenUrl="/auth/token") # Local scheme
+oauth2_scheme_bl = OAuth2PasswordBearer(tokenUrl="/auth/token")  # Local scheme
 
-async def get_current_user_for_bl_router(token: str = Depends(oauth2_scheme_bl), db: Session = Depends(get_db)) -> models.User:
+
+async def get_current_user_for_bl_router(
+    token: str = Depends(oauth2_scheme_bl), db: Session = Depends(get_db)
+) -> models.User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials (bl router)",
@@ -38,7 +42,10 @@ async def get_current_user_for_bl_router(token: str = Depends(oauth2_scheme_bl),
     )
     if not SECRET_KEY or not ALGORITHM:
         print("ERROR in blacklist.py: JWT Secret Key or Algorithm is not configured.")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server auth configuration error (bl router)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server auth configuration error (bl router)",
+        )
     try:
         payload = auth_decode_token(token)
         user_id: int = payload.get("user_id")
@@ -58,7 +65,7 @@ async def read_blacklist_entries(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+    current_user: models.User = Depends(get_current_active_user),
 ):
     """
     Retrieve all blacklist entries.
@@ -73,7 +80,7 @@ async def read_all_blacklist_entries(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+    current_user: models.User = Depends(get_current_active_user),
 ):
     """
     Retrieve all blacklist entries.
@@ -89,7 +96,7 @@ async def read_all_blacklist_entries(
 async def create_blacklist_entry_endpoint(
     entry_in: schemas.BlackListCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_usb_user)
+    current_user: models.User = Depends(get_usb_user),
 ):
     """
     Create a new blacklist entry.
@@ -97,15 +104,17 @@ async def create_blacklist_entry_endpoint(
     - `added_by` in `entry_in` will be ignored; `current_user.id` is used by CRUD.
     """
     # crud.create_blacklist_entry now takes adder_id and handles audit.
-    db_entry = crud.create_blacklist_entry(db=db, entry_in=entry_in, adder_id=current_user.id)
+    db_entry = crud.create_blacklist_entry(
+        db=db, entry_in=entry_in, adder_id=current_user.id
+    )
     return db_entry
 
 
 @router.delete("/{blacklist_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_blacklist_entry_endpoint( # Renamed to match plan's intent (soft delete)
+async def remove_blacklist_entry_endpoint(  # Renamed to match plan's intent (soft delete)
     blacklist_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+    current_user: models.User = Depends(get_current_active_user),
 ):
     """
     Deactivates a blacklist entry (soft delete by marking status=INACTIVE).
@@ -113,9 +122,14 @@ async def remove_blacklist_entry_endpoint( # Renamed to match plan's intent (sof
     """
     # crud.remove_blacklist_entry fetches the entry, checks if already inactive,
     # updates status, and audits. Returns the entry or None if not found.
-    removed_entry = crud.remove_blacklist_entry(db=db, entry_id=blacklist_id, remover_id=current_user.id)
+    removed_entry = crud.remove_blacklist_entry(
+        db=db, entry_id=blacklist_id, remover_id=current_user.id
+    )
     if not removed_entry:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Blacklist entry not found to remove/deactivate.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Blacklist entry not found to remove/deactivate.",
+        )
     # If already inactive, crud.remove_blacklist_entry returns it without error, which is fine.
     # Client gets 204, indicating the state is now "removed" or "inactive".
     return Response(status_code=status.HTTP_204_NO_CONTENT)

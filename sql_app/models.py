@@ -1,4 +1,16 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime, Date, Table
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    ForeignKey,
+    Enum,
+    Text,
+    JSON,
+    DateTime,
+    Date,
+    Table,
+)
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
 from sqlalchemy.orm.exc import DetachedInstanceError
@@ -14,7 +26,7 @@ request_checkpoint = Table(
     "request_checkpoint",
     Base.metadata,
     Column("request_id", ForeignKey("requests.id"), primary_key=True),
-    Column("checkpoint_id", ForeignKey("checkpoints.id"), primary_key=True)
+    Column("checkpoint_id", ForeignKey("checkpoints.id"), primary_key=True),
 )
 
 
@@ -28,7 +40,7 @@ class GenderEnum(enum.Enum):
 
 class RequestDuration(enum.Enum):
     SHORT_TERM = "SHORT_TERM"
-    LONG_TERM  = "LONG_TERM"
+    LONG_TERM = "LONG_TERM"
 
     def __str__(self) -> str:
         return self.value
@@ -58,8 +70,8 @@ class RequestPersonStatus(enum.Enum):
 
 
 class NationalityType(enum.Enum):
-    KZ = "KZ"       # Kazakhstan Citizen
-    FOREIGN = "FOREIGN" # Foreign Citizen
+    KZ = "KZ"  # Kazakhstan Citizen
+    FOREIGN = "FOREIGN"  # Foreign Citizen
 
     def __str__(self) -> str:
         return self.value
@@ -100,9 +112,7 @@ class Checkpoint(Base):
     name = Column(String)
 
     requests = relationship(
-        "Request",
-        secondary=request_checkpoint,
-        back_populates="checkpoints"
+        "Request", secondary=request_checkpoint, back_populates="checkpoints"
     )
 
     def __str__(self):
@@ -190,9 +200,19 @@ class User(Base):
     department = relationship("Department", back_populates="users")
     approvals = relationship("Approval", back_populates="approver")
     audit_logs = relationship("AuditLog", back_populates="actor")
-    created_blacklist_entries = relationship("BlackList", foreign_keys="[BlackList.added_by]", back_populates="added_by_user")
-    removed_blacklist_entries = relationship("BlackList", foreign_keys="[BlackList.removed_by]", back_populates="removed_by_user")
-    notifications = relationship("Notification", back_populates="recipient", foreign_keys="[Notification.user_id]")
+    created_blacklist_entries = relationship(
+        "BlackList", foreign_keys="[BlackList.added_by]", back_populates="added_by_user"
+    )
+    removed_blacklist_entries = relationship(
+        "BlackList",
+        foreign_keys="[BlackList.removed_by]",
+        back_populates="removed_by_user",
+    )
+    notifications = relationship(
+        "Notification",
+        back_populates="recipient",
+        foreign_keys="[Notification.user_id]",
+    )
 
     requests = relationship("Request", back_populates="creator")
     # visit_logs relationship removed from User, as VisitLog will now link to RequestPerson
@@ -208,28 +228,34 @@ class Request(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
-    status = Column(String, default='DRAFT')
+    status = Column(String, default="DRAFT")
     arrival_purpose = Column(String, nullable=False)
     accompanying = Column(String, nullable=False)
     contacts_of_accompanying = Column(String, nullable=False)
     duration = Column(
         Enum(RequestDuration),
         nullable=False,
-        server_default=RequestDuration.SHORT_TERM.value
+        server_default=RequestDuration.SHORT_TERM.value,
     )
 
     creator_id = Column(Integer, ForeignKey("users.id"))
     creator = relationship("User", back_populates="requests")
 
-    request_persons = relationship("RequestPerson", back_populates="request", passive_deletes=True)
-    approvals = relationship("Approval", back_populates="request")
-    notifications = relationship("Notification", back_populates="request", foreign_keys="[Notification.related_request_id]")
-    checkpoints = relationship(
-        "Checkpoint",
-        secondary=request_checkpoint,
-        back_populates="requests"
+    request_persons = relationship(
+        "RequestPerson", back_populates="request", passive_deletes=True
     )
-    visit_logs = relationship("VisitLog", back_populates="request", passive_deletes=True)
+    approvals = relationship("Approval", back_populates="request")
+    notifications = relationship(
+        "Notification",
+        back_populates="request",
+        foreign_keys="[Notification.related_request_id]",
+    )
+    checkpoints = relationship(
+        "Checkpoint", secondary=request_checkpoint, back_populates="requests"
+    )
+    visit_logs = relationship(
+        "VisitLog", back_populates="request", passive_deletes=True
+    )
 
     def __str__(self):
         return f"{self.id}) {self.status} {self.start_date}-{self.end_date} {self.arrival_purpose} {self.accompanying} {self.contacts_of_accompanying} {self.creator_id}"
@@ -245,23 +271,36 @@ class RequestPerson(Base):
     surname = Column(String, nullable=True)
     birth_date = Column(Date, nullable=False)
 
-    nationality = Column(Enum(NationalityType), nullable=False, server_default=NationalityType.KZ.value)
-    iin = Column(String(12), nullable=True, index=True) # Indexed for potential lookups
+    nationality = Column(
+        Enum(NationalityType), nullable=False, server_default=NationalityType.KZ.value
+    )
+    iin = Column(String(12), nullable=True, index=True)  # Indexed for potential lookups
 
-    doc_type = Column(String, nullable=True) # Nullable if KZ and IIN is provided
-    doc_number = Column(String, nullable=True, index=True) # Nullable if KZ and IIN is provided, indexed
-    doc_start_date = Column(Date, nullable=True) # Nullable if KZ
-    doc_end_date = Column(Date, nullable=True)   # Nullable if KZ
+    doc_type = Column(String, nullable=True)  # Nullable if KZ and IIN is provided
+    doc_number = Column(
+        String, nullable=True, index=True
+    )  # Nullable if KZ and IIN is provided, indexed
+    doc_start_date = Column(Date, nullable=True)  # Nullable if KZ
+    doc_end_date = Column(Date, nullable=True)  # Nullable if KZ
 
     gender = Column(Enum(GenderEnum), nullable=False)
-    citizenship = Column(String, nullable=False) # For foreign: country name. For KZ: "Kazakhstan"
+    citizenship = Column(
+        String, nullable=False
+    )  # For foreign: country name. For KZ: "Kazakhstan"
     company = Column(String, nullable=False)
     is_entered = Column(Boolean, nullable=False, default=False)
-    status = Column(Enum(RequestPersonStatus), nullable=False, server_default=RequestPersonStatus.PENDING_USB.value, default=RequestPersonStatus.PENDING_USB)
+    status = Column(
+        Enum(RequestPersonStatus),
+        nullable=False,
+        server_default=RequestPersonStatus.PENDING_USB.value,
+        default=RequestPersonStatus.PENDING_USB,
+    )
     rejection_reason = Column(Text, nullable=True)
 
     request = relationship("Request", back_populates="request_persons")
-    visit_logs = relationship("VisitLog", back_populates="request_person", passive_deletes=True) # Added back_populates
+    visit_logs = relationship(
+        "VisitLog", back_populates="request_person", passive_deletes=True
+    )  # Added back_populates
 
     def __str__(self):
         if self.iin and self.doc_number is None:
@@ -277,15 +316,21 @@ class VisitLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     # request_id is still relevant to know which overall request this visit belongs to.
-    request_id = Column(Integer, ForeignKey("requests.id", ondelete="CASCADE"), nullable=False)
-    request_person_id = Column(Integer, ForeignKey("request_persons.id", ondelete="CASCADE"), nullable=False)
-    check_in_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    request_id = Column(
+        Integer, ForeignKey("requests.id", ondelete="CASCADE"), nullable=False
+    )
+    request_person_id = Column(
+        Integer, ForeignKey("request_persons.id", ondelete="CASCADE"), nullable=False
+    )
+    check_in_time = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     check_out_time = Column(DateTime(timezone=True), nullable=True)
     checkpoint_id = Column(Integer, ForeignKey("checkpoints.id"), nullable=False)
 
     request = relationship("Request", back_populates="visit_logs")
     request_person = relationship("RequestPerson", back_populates="visit_logs")
-    checkpoint = relationship("Checkpoint") # Added relationship to Checkpoint
+    checkpoint = relationship("Checkpoint")  # Added relationship to Checkpoint
 
     # NOTE: Data Retention Policy: VisitLog records should be managed (e.g., archived or purged)
     # after 18 months as per operational requirements. This is typically handled by
@@ -303,6 +348,7 @@ class VisitLog(Base):
 
         return f"request_id={self.request_id}, person_id={self.request_person_id}, {check_in}-{check_out}, KPP-{self.checkpoint_id}"
 
+
 class BlackList(Base):
     __tablename__ = "blacklist"
 
@@ -310,9 +356,11 @@ class BlackList(Base):
     firstname = Column(String)
     lastname = Column(String)
     surname = Column(String, nullable=True)
-    birth_date = Column(Date, nullable=False) # Keep for matching
+    birth_date = Column(Date, nullable=False)  # Keep for matching
 
-    nationality = Column(Enum(NationalityType), nullable=True) # To distinguish IIN from foreign docs
+    nationality = Column(
+        Enum(NationalityType), nullable=True
+    )  # To distinguish IIN from foreign docs
     iin = Column(String(12), nullable=True, index=True)
 
     # doc_type, doc_number, etc. for foreign documents or if IIN is not the primary blacklist key
@@ -322,17 +370,23 @@ class BlackList(Base):
     # citizenship can be used to store the country for foreign nationals
     citizenship = Column(String, nullable=True)
 
-    company = Column(String, nullable=True) # Company might not always be known for blacklist
+    company = Column(
+        String, nullable=True
+    )  # Company might not always be known for blacklist
     reason = Column(Text, nullable=True)
 
     added_by = Column(Integer, ForeignKey("users.id"))
     added_at = Column(DateTime(timezone=True), server_default=func.now())
     removed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     removed_at = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String, default='ACTIVE', index=True)
+    status = Column(String, default="ACTIVE", index=True)
 
-    added_by_user = relationship("User", foreign_keys=[added_by], back_populates="created_blacklist_entries")
-    removed_by_user = relationship("User", foreign_keys=[removed_by], back_populates="removed_blacklist_entries")
+    added_by_user = relationship(
+        "User", foreign_keys=[added_by], back_populates="created_blacklist_entries"
+    )
+    removed_by_user = relationship(
+        "User", foreign_keys=[removed_by], back_populates="removed_blacklist_entries"
+    )
 
     def __str__(self):
         return f"{self.lastname} {self.firstname} {self.iin} {self.company} {self.citizenship} {self.reason} {self.added_by}"
@@ -348,8 +402,12 @@ class Notification(Base):
     is_read = Column(Boolean, default=False, nullable=False)
     related_request_id = Column(Integer, ForeignKey("requests.id"), nullable=True)
 
-    recipient = relationship("User", back_populates="notifications", foreign_keys=[user_id])
-    request = relationship("Request", back_populates="notifications", foreign_keys=[related_request_id])
+    recipient = relationship(
+        "User", back_populates="notifications", foreign_keys=[user_id]
+    )
+    request = relationship(
+        "Request", back_populates="notifications", foreign_keys=[related_request_id]
+    )
 
     def __str__(self):
         return f"{self.id} {self.user_id} {self.message} {self.is_read}"

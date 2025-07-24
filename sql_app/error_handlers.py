@@ -1,6 +1,7 @@
 """
 Custom exception handlers and error responses for better API consistency.
 """
+
 from fastapi import Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -25,7 +26,9 @@ class BlacklistedPersonException(VisitorManagementException):
     """Raised when trying to create request for blacklisted person"""
 
     def __init__(self, person_name: str, detail: dict = None):
-        message = f"Person '{person_name}' is blacklisted and cannot be added to requests"
+        message = (
+            f"Person '{person_name}' is blacklisted and cannot be added to requests"
+        )
         super().__init__(message, status.HTTP_400_BAD_REQUEST, detail)
 
 
@@ -33,7 +36,11 @@ class InsufficientPermissionsException(VisitorManagementException):
     """Raised when user lacks required permissions"""
 
     def __init__(self, required_role: str = None, detail: dict = None):
-        message = f"Insufficient permissions. Required role: {required_role}" if required_role else "Insufficient permissions"
+        message = (
+            f"Insufficient permissions. Required role: {required_role}"
+            if required_role
+            else "Insufficient permissions"
+        )
         super().__init__(message, status.HTTP_403_FORBIDDEN, detail)
 
 
@@ -48,12 +55,16 @@ class InvalidRequestStateException(VisitorManagementException):
 class ResourceNotFoundException(VisitorManagementException):
     """Raised when requested resource is not found"""
 
-    def __init__(self, resource_type: str, resource_id: Union[int, str], detail: dict = None):
+    def __init__(
+        self, resource_type: str, resource_id: Union[int, str], detail: dict = None
+    ):
         message = f"{resource_type} with ID '{resource_id}' not found"
         super().__init__(message, status.HTTP_404_NOT_FOUND, detail)
 
 
-async def visitor_management_exception_handler(request: Request, exc: VisitorManagementException):
+async def visitor_management_exception_handler(
+    request: Request, exc: VisitorManagementException
+):
     """Handle custom visitor management exceptions"""
     logger.error(f"VisitorManagementException: {exc.message} - Detail: {exc.detail}")
     return JSONResponse(
@@ -62,8 +73,8 @@ async def visitor_management_exception_handler(request: Request, exc: VisitorMan
             "error": True,
             "message": exc.message,
             "detail": exc.detail,
-            "type": exc.__class__.__name__
-        }
+            "type": exc.__class__.__name__,
+        },
     )
 
 
@@ -72,11 +83,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     logger.warning(f"HTTPException: {exc.status_code} - {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": True,
-            "message": exc.detail,
-            "status_code": exc.status_code
-        }
+        content={"error": True, "message": exc.detail, "status_code": exc.status_code},
     )
 
 
@@ -89,8 +96,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "error": True,
             "message": "Validation error",
             "detail": exc.errors(),
-            "type": "ValidationError"
-        }
+            "type": "ValidationError",
+        },
     )
 
 
@@ -109,11 +116,7 @@ async def integrity_error_handler(request: Request, exc: IntegrityError):
 
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
-        content={
-            "error": True,
-            "message": error_message,
-            "type": "IntegrityError"
-        }
+        content={"error": True, "message": error_message, "type": "IntegrityError"},
     )
 
 
@@ -125,8 +128,8 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError):
         content={
             "error": True,
             "message": "Database operation failed",
-            "type": "DatabaseError"
-        }
+            "type": "DatabaseError",
+        },
     )
 
 
@@ -138,14 +141,16 @@ async def general_exception_handler(request: Request, exc: Exception):
         content={
             "error": True,
             "message": "An unexpected error occurred",
-            "type": "InternalError"
-        }
+            "type": "InternalError",
+        },
     )
 
 
 def setup_exception_handlers(app):
     """Setup all exception handlers for the FastAPI app"""
-    app.add_exception_handler(VisitorManagementException, visitor_management_exception_handler)
+    app.add_exception_handler(
+        VisitorManagementException, visitor_management_exception_handler
+    )
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(IntegrityError, integrity_error_handler)

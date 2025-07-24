@@ -2,20 +2,21 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer # Added
-from jose import JWTError, jwt # Added
+from fastapi.security import OAuth2PasswordBearer  # Added
+from jose import JWTError, jwt  # Added
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 
 from .. import crud, models, schemas
-from ..dependencies import get_db # get_db is the only import from dependencies
+from ..dependencies import get_db  # get_db is the only import from dependencies
+
 # Removed: from ..dependencies import oauth2_scheme
-from ..auth import decode_token as auth_decode_token # For JWT decoding
+from ..auth import decode_token as auth_decode_token  # For JWT decoding
 
 load_dotenv()
 
-SECRET_KEY = os.getenv('SECRET_KEY')
-ALGORITHM = os.getenv('ALGORITHM')
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
 
 if not SECRET_KEY or not ALGORITHM:
     print("CRITICAL WARNING in departments.py: SECRET_KEY or ALGORITHM not found.")
@@ -28,9 +29,12 @@ router = APIRouter(
 )
 
 # --- Real Authentication Logic (Locally Defined) ---
-oauth2_scheme_dept = OAuth2PasswordBearer(tokenUrl="/auth/token") # Local scheme
+oauth2_scheme_dept = OAuth2PasswordBearer(tokenUrl="/auth/token")  # Local scheme
 
-async def get_current_user_for_dept_router(token: str = Depends(oauth2_scheme_dept), db: Session = Depends(get_db)) -> models.User:
+
+async def get_current_user_for_dept_router(
+    token: str = Depends(oauth2_scheme_dept), db: Session = Depends(get_db)
+) -> models.User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials (dept router)",
@@ -38,9 +42,14 @@ async def get_current_user_for_dept_router(token: str = Depends(oauth2_scheme_de
     )
     if not SECRET_KEY or not ALGORITHM:
         print("ERROR in departments.py: JWT Secret Key or Algorithm is not configured.")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server auth configuration error (dept router)")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server auth configuration error (dept router)",
+        )
     try:
-        payload = auth_decode_token(token) # Using imported decode_token from sql_app.auth
+        payload = auth_decode_token(
+            token
+        )  # Using imported decode_token from sql_app.auth
         user_id: int = payload.get("user_id")
         if user_id is None:
             raise credentials_exception
@@ -52,10 +61,18 @@ async def get_current_user_for_dept_router(token: str = Depends(oauth2_scheme_de
         raise credentials_exception
     return user
 
-async def get_current_active_user_for_dept_router(current_user: models.User = Depends(get_current_user_for_dept_router)) -> models.User:
+
+async def get_current_active_user_for_dept_router(
+    current_user: models.User = Depends(get_current_user_for_dept_router),
+) -> models.User:
     if not current_user.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user (dept router)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user (dept router)",
+        )
     return current_user
+
+
 # --- End Real Authentication Logic ---
 
 
@@ -64,7 +81,9 @@ async def read_departments(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_dept_router) # Using REAL local auth
+    current_user: models.User = Depends(
+        get_current_active_user_for_dept_router
+    ),  # Using REAL local auth
 ):
     """
     Retrieve all departments.
@@ -81,7 +100,9 @@ async def read_departments(
 async def read_department(
     department_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user_for_dept_router) # Using REAL local auth
+    current_user: models.User = Depends(
+        get_current_active_user_for_dept_router
+    ),  # Using REAL local auth
 ):
     """
     Retrieve a single department by ID.
@@ -90,8 +111,11 @@ async def read_department(
     print(f"User {current_user.username} fetching department ID: {department_id}.")
     db_department = crud.get_department(db, department_id=department_id)
     if db_department is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Department not found"
+        )
     return db_department
+
 
 # Example for a protected POST endpoint (if needed later)
 # @router.post("/", response_model=schemas.Department, status_code=status.HTTP_201_CREATED)

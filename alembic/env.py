@@ -9,13 +9,14 @@ from sqlalchemy import pool
 from alembic import context
 
 # ✅ Добавляем путь к корню проекта
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-load_dotenv() # Ensure .env is loaded before importing project modules
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+load_dotenv()  # Ensure .env is loaded before importing project modules
 
 # ✅ Абсолютный импорт
 try:
-    from sql_app.database import Base, engine # Base needs to be imported before models
-    from sql_app.models import * # Ensure all model classes are brought into scope
+    from sql_app.database import Base, engine  # Base needs to be imported before models
+    from sql_app.models import *  # Ensure all model classes are brought into scope
+
     print("Successfully imported Base and models.")
     if not Base.metadata.tables:
         print("Base.metadata.tables is EMPTY after model import!")
@@ -23,6 +24,7 @@ try:
         print(f"Base.metadata.tables contains: {list(Base.metadata.tables.keys())}")
 except Exception as e:
     import traceback
+
     print(f"Error during import of Base or models in env.py: {e}")
     print(traceback.format_exc())
     raise
@@ -38,7 +40,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Вместо sqlalchemy.url читаем переменную окружения
-config.set_main_option('sqlalchemy.url', os.getenv("DATABASE_URL"))
+config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))
 # add your model's MetaData object here
 # for 'autogenerate' support
 # from myapp import mymodel
@@ -91,9 +93,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()
@@ -102,4 +102,4 @@ def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online() # Temporarily commented out to avoid DB connection error during generation
+    run_migrations_online()  # Temporarily commented out to avoid DB connection error during generation

@@ -14,19 +14,17 @@ except ImportError:
 
     load_dotenv()
 
-
     class FallbackSettings:
-        database_url = os.getenv('DATABASE_URL', 'sqlite:///./test.db')
-        env = os.getenv('ENV', 'dev')
-
+        database_url = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+        env = os.getenv("ENV", "dev")
 
     settings = FallbackSettings()
 
 logger = logging.getLogger(__name__)
 
 # Определяем тип базы данных
-is_sqlite = settings.database_url.startswith('sqlite')
-is_test = getattr(settings, 'env', 'dev') == "test"
+is_sqlite = settings.database_url.startswith("sqlite")
+is_test = getattr(settings, "env", "dev") == "test"
 
 # Конфигурация движка базы данных
 if is_sqlite or is_test:
@@ -35,7 +33,7 @@ if is_sqlite or is_test:
         settings.database_url,
         connect_args={"check_same_thread": False} if is_sqlite else {},
         poolclass=StaticPool if is_sqlite else None,
-        echo=getattr(settings, 'env', 'dev') == "dev"
+        echo=getattr(settings, "env", "dev") == "dev",
     )
 else:
     # PostgreSQL конфигурация
@@ -45,7 +43,7 @@ else:
         max_overflow=20,
         pool_pre_ping=True,
         pool_recycle=3600,
-        echo=getattr(settings, 'env', 'dev') == "dev"
+        echo=getattr(settings, "env", "dev") == "dev",
     )
 
 
@@ -53,7 +51,7 @@ else:
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     """Настройка SQLite pragma для поддержки внешних ключей"""
-    if 'sqlite' in str(dbapi_connection):
+    if "sqlite" in str(dbapi_connection):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
@@ -62,7 +60,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 @event.listens_for(Engine, "connect")
 def set_postgresql_search_path(dbapi_connection, connection_record):
     """Настройка PostgreSQL search path и timezone"""
-    if 'postgresql' in str(dbapi_connection):
+    if "postgresql" in str(dbapi_connection):
         try:
             with dbapi_connection.cursor() as cursor:
                 cursor.execute("SET timezone='UTC'")
@@ -72,10 +70,7 @@ def set_postgresql_search_path(dbapi_connection, connection_record):
 
 # Конфигурация сессий
 SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-    expire_on_commit=False
+    autocommit=False, autoflush=False, bind=engine, expire_on_commit=False
 )
 
 Base = declarative_base()

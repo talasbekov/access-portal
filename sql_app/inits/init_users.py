@@ -24,12 +24,14 @@ def init_test_users():
     try:
         # Создаём тестовую структуру организации
         # Организация
-        org = db.query(Department).filter(Department.name == "ТОО Тестовая Организация").first()
+        org = (
+            db.query(Department)
+            .filter(Department.name == "ТОО Тестовая Организация")
+            .first()
+        )
         if not org:
             org = Department(
-                name="ТОО Тестовая Организация",
-                type="COMPANY",
-                parent_id=None
+                name="ТОО Тестовая Организация", type="COMPANY", parent_id=None
             )
             db.add(org)
             db.commit()
@@ -39,33 +41,35 @@ def init_test_users():
         dept = db.query(Department).filter(Department.name == "Департамент ИТ").first()
         if not dept:
             dept = Department(
-                name="Департамент ИТ",
-                type="DEPARTMENT",
-                parent_id=org.id
+                name="Департамент ИТ", type="DEPARTMENT", parent_id=org.id
             )
             db.add(dept)
             db.commit()
             print("✅ Создан департамент")
 
         # Управление
-        division = db.query(Department).filter(Department.name == "Управление разработки").first()
+        division = (
+            db.query(Department)
+            .filter(Department.name == "Управление разработки")
+            .first()
+        )
         if not division:
             division = Department(
-                name="Управление разработки",
-                type="DIVISION",
-                parent_id=dept.id
+                name="Управление разработки", type="DIVISION", parent_id=dept.id
             )
             db.add(division)
             db.commit()
             print("✅ Создано управление")
 
         # Отдел
-        unit = db.query(Department).filter(Department.name == "Отдел веб-разработки").first()
+        unit = (
+            db.query(Department)
+            .filter(Department.name == "Отдел веб-разработки")
+            .first()
+        )
         if not unit:
             unit = Department(
-                name="Отдел веб-разработки",
-                type="UNIT",
-                parent_id=division.id
+                name="Отдел веб-разработки", type="UNIT", parent_id=division.id
             )
             db.add(unit)
             db.commit()
@@ -80,7 +84,7 @@ def init_test_users():
                 "phone": "+77001234567",
                 "role_code": constants.ADMIN_ROLE_CODE,
                 "department_id": org.id,
-                "password": "admin123"
+                "password": "admin123",
             },
             {
                 "username": "nach_dept",
@@ -89,7 +93,7 @@ def init_test_users():
                 "phone": "+77001234568",
                 "role_code": constants.NACH_DEPARTAMENTA_ROLE_CODE,
                 "department_id": dept.id,
-                "password": "dept123"
+                "password": "dept123",
             },
             {
                 "username": "nach_upr",
@@ -98,7 +102,7 @@ def init_test_users():
                 "phone": "+77001234569",
                 "role_code": constants.NACH_UPRAVLENIYA_ROLE_CODE,
                 "department_id": division.id,
-                "password": "upr123"
+                "password": "upr123",
             },
             {
                 "username": "usb_user",
@@ -107,7 +111,7 @@ def init_test_users():
                 "phone": "+77001234570",
                 "role_code": constants.USB_ROLE_CODE,
                 "department_id": org.id,
-                "password": "usb123"
+                "password": "usb123",
             },
             {
                 "username": "as_user",
@@ -116,7 +120,7 @@ def init_test_users():
                 "phone": "+77001234571",
                 "role_code": constants.AS_ROLE_CODE,
                 "department_id": org.id,
-                "password": "as123"
+                "password": "as123",
             },
             {
                 "username": "kpp1_user",
@@ -125,7 +129,7 @@ def init_test_users():
                 "phone": "+77001234572",
                 "role_code": "KPP-1",
                 "department_id": org.id,
-                "password": "kpp123"
+                "password": "kpp123",
             },
             {
                 "username": "employee",
@@ -134,19 +138,25 @@ def init_test_users():
                 "phone": "+77001234573",
                 "role_code": constants.EMPLOYEE_ROLE_CODE,
                 "department_id": unit.id,
-                "password": "emp123"
-            }
+                "password": "emp123",
+            },
         ]
 
         for user_data in test_users:
             # Проверяем, существует ли пользователь
-            existing_user = db.query(User).filter(User.username == user_data["username"]).first()
+            existing_user = (
+                db.query(User).filter(User.username == user_data["username"]).first()
+            )
 
             if not existing_user:
                 # Получаем роль
-                role = db.query(Role).filter(Role.code == user_data["role_code"]).first()
+                role = (
+                    db.query(Role).filter(Role.code == user_data["role_code"]).first()
+                )
                 if not role:
-                    print(f"❌ Роль {user_data['role_code']} не найдена. Запустите init_roles.py")
+                    print(
+                        f"❌ Роль {user_data['role_code']} не найдена. Запустите init_roles.py"
+                    )
                     continue
 
                 # Создаём пользователя
@@ -158,10 +168,12 @@ def init_test_users():
                     hashed_password=get_password_hash(user_data["password"]),
                     role_id=role.id,
                     department_id=user_data["department_id"],
-                    is_active=True
+                    is_active=True,
                 )
                 db.add(new_user)
-                print(f"✅ Создан пользователь: {user_data['username']} (пароль: {user_data['password']})")
+                print(
+                    f"✅ Создан пользователь: {user_data['username']} (пароль: {user_data['password']})"
+                )
             else:
                 print(f"📝 Пользователь {user_data['username']} уже существует")
 
@@ -170,7 +182,9 @@ def init_test_users():
         print("\n📋 Данные для входа:")
         print("=" * 50)
         for user in test_users:
-            print(f"Логин: {user['username']:<15} Пароль: {user['password']:<10} Роль: {user['role_code']}")
+            print(
+                f"Логин: {user['username']:<15} Пароль: {user['password']:<10} Роль: {user['role_code']}"
+            )
 
     except Exception as e:
         print(f"❌ Ошибка: {e}")

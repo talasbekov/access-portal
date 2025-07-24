@@ -33,14 +33,18 @@ def is_nach_upravleniya(user: models.User) -> bool:
 
 def is_kpp(user: models.User) -> bool:
     """Проверка, является ли пользователь оператором КПП"""
-    return user.role and user.role.code and user.role.code.startswith(constants.KPP_ROLE_PREFIX)
+    return (
+        user.role
+        and user.role.code
+        and user.role.code.startswith(constants.KPP_ROLE_PREFIX)
+    )
 
 
 def get_kpp_number(user: models.User) -> Optional[int]:
     """Получить номер КПП из роли пользователя"""
     if is_kpp(user):
         try:
-            return int(user.role.code[len(constants.KPP_ROLE_PREFIX):])
+            return int(user.role.code[len(constants.KPP_ROLE_PREFIX) :])
         except ValueError:
             return None
     return None
@@ -74,7 +78,7 @@ def can_manage_blacklist(user: models.User) -> bool:
     return user.role and user.role.code in [
         constants.ADMIN_ROLE_CODE,
         constants.USB_ROLE_CODE,
-        constants.AS_ROLE_CODE
+        constants.AS_ROLE_CODE,
     ]
 
 
@@ -84,7 +88,7 @@ def can_view_all_requests(user: models.User) -> bool:
         constants.ADMIN_ROLE_CODE,
         constants.USB_ROLE_CODE,
         constants.AS_ROLE_CODE,
-        constants.AS_EMPLOYEE_ROLE_CODE
+        constants.AS_EMPLOYEE_ROLE_CODE,
     ]
 
 
@@ -94,7 +98,7 @@ def can_view_all_logs(user: models.User) -> bool:
         constants.ADMIN_ROLE_CODE,
         constants.USB_ROLE_CODE,
         constants.AS_ROLE_CODE,
-        constants.AS_EMPLOYEE_ROLE_CODE
+        constants.AS_EMPLOYEE_ROLE_CODE,
     ]
 
 
@@ -105,6 +109,7 @@ def get_user_department_scope(db: Session, user: models.User) -> List[int]:
 
     if is_nach_departamenta(user) or is_nach_upravleniya(user):
         from . import crud
+
         return crud.get_department_descendant_ids(db, user.department_id)
 
     return [user.department_id]
@@ -134,10 +139,7 @@ def get_request_filters_for_user(db: Session, user: models.User) -> Dict:
         kpp_number = get_kpp_number(user)
         if kpp_number:
             filters["checkpoint_id"] = kpp_number
-            filters["allowed_statuses"] = [
-                constants.APPROVED_AS,
-                constants.ISSUED
-            ]
+            filters["allowed_statuses"] = [constants.APPROVED_AS, constants.ISSUED]
 
     # По умолчанию - только свои заявки
     else:
@@ -160,7 +162,9 @@ def can_user_check_in_visitor(user: models.User, request: models.Request) -> boo
     return False
 
 
-def can_user_view_request(db: Session, user: models.User, request: models.Request) -> bool:
+def can_user_view_request(
+    db: Session, user: models.User, request: models.Request
+) -> bool:
     """Проверка права просмотра конкретной заявки"""
     # Админ, УСБ, АС видят все
     if can_view_all_requests(user):
@@ -173,6 +177,7 @@ def can_user_view_request(db: Session, user: models.User, request: models.Reques
     # Начальники видят заявки своих подразделений
     if user.department_id and request.creator and request.creator.department_id:
         from . import crud
+
         dept_ids = get_user_department_scope(db, user)
         if request.creator.department_id in dept_ids:
             return True

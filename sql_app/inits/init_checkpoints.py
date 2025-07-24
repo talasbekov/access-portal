@@ -22,40 +22,34 @@ def init_checkpoints():
     db = SessionLocal()
 
     checkpoints_data = [
-        {
-            "code": "KPP-1",
-            "name": "КПП-1 (Главный вход)"
-        },
-        {
-            "code": "KPP-2",
-            "name": "КПП-2 (Служебный вход)"
-        },
-        {
-            "code": "KPP-3",
-            "name": "КПП-3 (Грузовой вход)"
-        },
-        {
-            "code": "KPP-4",
-            "name": "КПП-4 (Запасной вход)"
-        }
+        {"code": "KPP-1", "name": "КПП-1 (Главный вход)"},
+        {"code": "KPP-2", "name": "КПП-2 (Служебный вход)"},
+        {"code": "KPP-3", "name": "КПП-3 (Грузовой вход)"},
+        {"code": "KPP-4", "name": "КПП-4 (Запасной вход)"},
     ]
 
     try:
         for checkpoint_data in checkpoints_data:
             # Проверяем, существует ли КПП
-            existing_checkpoint = db.query(Checkpoint).filter(
-                Checkpoint.code == checkpoint_data["code"]
-            ).first()
+            existing_checkpoint = (
+                db.query(Checkpoint)
+                .filter(Checkpoint.code == checkpoint_data["code"])
+                .first()
+            )
 
             if not existing_checkpoint:
                 # Создаём новый КПП
                 new_checkpoint = Checkpoint(**checkpoint_data)
                 db.add(new_checkpoint)
-                print(f"✅ Создан КПП: {checkpoint_data['name']} ({checkpoint_data['code']})")
+                print(
+                    f"✅ Создан КПП: {checkpoint_data['name']} ({checkpoint_data['code']})"
+                )
             else:
                 # Обновляем существующий КПП
                 existing_checkpoint.name = checkpoint_data["name"]
-                print(f"📝 Обновлен КПП: {checkpoint_data['name']} ({checkpoint_data['code']})")
+                print(
+                    f"📝 Обновлен КПП: {checkpoint_data['name']} ({checkpoint_data['code']})"
+                )
 
         db.commit()
         print("\n🎉 Инициализация КПП завершена успешно!")

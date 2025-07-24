@@ -5,23 +5,31 @@ from datetime import date
 
 from .. import crud, models, schemas, constants
 from ..dependencies import get_db
-from ..auth_dependencies import get_current_active_user # General authenticated user
+from ..auth_dependencies import get_current_active_user  # General authenticated user
 
 router = APIRouter(
     prefix="/audit-logs",
     tags=["Audit Logs"],
-    responses={404: {"description": "Not found"}}
+    responses={404: {"description": "Not found"}},
 )
+
 
 @router.get("/", response_model=List[schemas.AuditLog])
 async def read_audit_logs_endpoint(
     skip: int = 0,
     limit: int = 100,
-    actor_department_id: Optional[int] = Query(None, description="Filter by the department ID of the user who performed the action."),
-    start_date: Optional[date] = Query(None, description="Filter logs from this date (inclusive)."),
-    end_date: Optional[date] = Query(None, description="Filter logs up to this date (inclusive)."),
+    actor_department_id: Optional[int] = Query(
+        None,
+        description="Filter by the department ID of the user who performed the action.",
+    ),
+    start_date: Optional[date] = Query(
+        None, description="Filter logs from this date (inclusive)."
+    ),
+    end_date: Optional[date] = Query(
+        None, description="Filter logs up to this date (inclusive)."
+    ),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_active_user)
+    current_user: models.User = Depends(get_current_active_user),
 ):
     """
     Retrieve audit logs with RBAC, filtering, and pagination.
@@ -38,10 +46,10 @@ async def read_audit_logs_endpoint(
             limit=limit,
             actor_department_id=actor_department_id,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
         )
         return audit_logs
-    except HTTPException as e: # Catch permission errors from CRUD
+    except HTTPException as e:  # Catch permission errors from CRUD
         raise e
     # except Exception as e:
     #     # Log this error properly in a real application

@@ -14,8 +14,16 @@ from sql_app.database import engine
 from sql_app.config import settings
 
 from sql_app.routers import (
-    auth, users, role, departments, checkpoints,
-    requests, blacklist, audit_logs, visits, admin as admin_router
+    auth,
+    users,
+    role,
+    departments,
+    checkpoints,
+    requests,
+    blacklist,
+    audit_logs,
+    visits,
+    admin as admin_router,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -46,8 +54,18 @@ app.add_middleware(
 )
 
 # 3) Роутеры
-for router in (auth, users, role, departments, checkpoints,
-               requests, blacklist, audit_logs, visits, admin_router):
+for router in (
+    auth,
+    users,
+    role,
+    departments,
+    checkpoints,
+    requests,
+    blacklist,
+    audit_logs,
+    visits,
+    admin_router,
+):
     app.include_router(router.router)
 
 
@@ -57,6 +75,7 @@ app.mount(
     StaticFiles(directory=swagger_dist),
     name="swagger-static",
 )
+
 
 # 3) Сервируем UI, подставляя локальные файлы
 @app.get("/docs", include_in_schema=False)
@@ -69,10 +88,12 @@ def custom_swagger_ui():
         swagger_favicon_url="/swagger-static/favicon-32x32.png",
     )
 
+
 # 5) SQLAdmin
 #
 #   a) монтируем локальную статику из пакета sqladmin
 import sqladmin
+
 sqladmin_pkg_dir = os.path.dirname(sqladmin.__file__)
 app.mount(
     "/admin/statics",
@@ -84,6 +105,7 @@ app.mount(
 #      и указываем именно тот же static_url, куда мы выше примонтировали папку
 admin = create_admin(app)
 
+
 # 6) Хелсчек и корень
 @app.get("/")
 async def root():
@@ -94,16 +116,25 @@ async def root():
         "health": "/health",
     }
 
+
 @app.get("/health")
 async def health_check():
     from sql_app.database import check_database_health
+
     ok = check_database_health()
     return {
         "status": "ok" if ok else "degraded",
         "db": "up" if ok else "down",
     }
 
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000,
-                reload=settings.env == "dev", log_level="info")
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=settings.env == "dev",
+        log_level="info",
+    )

@@ -5,6 +5,7 @@
 
 try:
     from sql_app.config import settings
+
     print("✅ Config imported successfully")
     print(f"Database URL: {settings.database_url}")
     print(f"Environment: {settings.env}")
@@ -14,12 +15,14 @@ except Exception as e:
 
 try:
     from sql_app.database import engine
+
     print("✅ Database imported successfully")
 except Exception as e:
     print(f"❌ Error importing database: {e}")
 
 try:
     from main import app
+
     print("✅ Main app imported successfully")
 except Exception as e:
     print(f"❌ Error importing main app: {e}")
