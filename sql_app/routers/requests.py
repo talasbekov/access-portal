@@ -244,8 +244,8 @@ async def read_single_request(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found or access denied.")
     return db_request
 
-# ------------- Visit Log Endpoints for a Request -------------
 
+# ------------- Visit Log Endpoints for a Request -------------
 @router.post("/{request_id}/visits", response_model=schemas.VisitLog, status_code=status.HTTP_201_CREATED, tags=["Visit Logs"])
 async def create_visit_log_for_request(
     request_id: int,

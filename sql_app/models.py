@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Enum, Text, JSON, DateTime, Date, Table
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.sql import func
 import enum
 
@@ -21,10 +22,16 @@ class GenderEnum(enum.Enum):
     MALE = "MALE"
     FEMALE = "FEMALE"
 
+    def __str__(self) -> str:
+        return self.value
+
 
 class RequestDuration(enum.Enum):
     SHORT_TERM = "SHORT_TERM"
     LONG_TERM  = "LONG_TERM"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class DepartmentType(enum.Enum):
@@ -32,6 +39,10 @@ class DepartmentType(enum.Enum):
     DEPARTMENT = "DEPARTMENT"
     DIVISION = "DIVISION"
     UNIT = "UNIT"
+
+    def __str__(self) -> str:
+        return self.value
+
 
 class RequestPersonStatus(enum.Enum):
     PENDING_USB = "PENDING_USB"  # Ожидает одобрения УСБ
@@ -42,9 +53,16 @@ class RequestPersonStatus(enum.Enum):
     APPROVED_AS = "APPROVED_AS"  # Одобрено АС (финальное одобрение)
     DECLINED_AS = "DECLINED_AS"
 
+    def __str__(self) -> str:
+        return self.value
+
+
 class NationalityType(enum.Enum):
     KZ = "KZ"       # Kazakhstan Citizen
     FOREIGN = "FOREIGN" # Foreign Citizen
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class Department(Base):
@@ -58,6 +76,20 @@ class Department(Base):
     parent = relationship("Department", remote_side=[id], back_populates="children")
     children = relationship("Department", back_populates="parent")
     users = relationship("User", back_populates="department")
+
+    def __str__(self):
+        return self.get_full_name()
+
+    def get_full_name(self):
+        try:
+            name_chain = [self.name]
+            parent = self.parent
+            while parent:
+                name_chain.insert(0, parent.name)
+                parent = parent.parent
+            return "->".join(name_chain)
+        except DetachedInstanceError:
+            return self.name  # fallback
 
 
 class Checkpoint(Base):
@@ -73,16 +105,25 @@ class Checkpoint(Base):
         back_populates="checkpoints"
     )
 
+    def __str__(self):
+        return f"{self.id}) {self.name}"
+
 
 class ApprovalStep(enum.Enum):
     DCS = "DCS"
     ZD = "ZD"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class ApprovalStatus(enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     DECLINED = "DECLINED"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class Approval(Base):
@@ -114,6 +155,9 @@ class AuditLog(Base):
 
     actor = relationship("User", back_populates="audit_logs")
 
+    def __str__(self):
+        return f"{self.id}) {self.data}"
+
 
 class Role(Base):
     __tablename__ = "roles"
@@ -123,7 +167,10 @@ class Role(Base):
     description = Column(String, nullable=True)
     code = Column(String, unique=True, nullable=True, index=True)
 
-    users = relationship("User", back_populates="role", lazy="dynamic")
+    users = relationship("User", back_populates="role", lazy="selectin")
+
+    def __str__(self):
+        return f"{self.name} - {self.description}"
 
 
 class User(Base):
@@ -150,6 +197,9 @@ class User(Base):
     requests = relationship("Request", back_populates="creator")
     # visit_logs relationship removed from User, as VisitLog will now link to RequestPerson
 
+    def __str__(self):
+        return f"{self.id}) логин ({self.username}), ФИО ({self.full_name}), тел ({self.phone})"
+
 
 class Request(Base):
     __tablename__ = "requests"
@@ -171,7 +221,7 @@ class Request(Base):
     creator_id = Column(Integer, ForeignKey("users.id"))
     creator = relationship("User", back_populates="requests")
 
-    request_persons = relationship("RequestPerson", back_populates="request")
+    request_persons = relationship("RequestPerson", back_populates="request", passive_deletes=True)
     approvals = relationship("Approval", back_populates="request")
     notifications = relationship("Notification", back_populates="request", foreign_keys="[Notification.related_request_id]")
     checkpoints = relationship(
@@ -179,14 +229,17 @@ class Request(Base):
         secondary=request_checkpoint,
         back_populates="requests"
     )
-    visit_logs = relationship("VisitLog", back_populates="request")
+    visit_logs = relationship("VisitLog", back_populates="request", passive_deletes=True)
+
+    def __str__(self):
+        return f"{self.id}) {self.status} {self.start_date}-{self.end_date} {self.arrival_purpose} {self.accompanying} {self.contacts_of_accompanying} {self.creator_id}"
 
 
 class RequestPerson(Base):
     __tablename__ = "request_persons"
 
     id = Column(Integer, primary_key=True, index=True)
-    request_id = Column(Integer, ForeignKey("requests.id"))
+    request_id = Column(Integer, ForeignKey("requests.id", ondelete="CASCADE"))
     firstname = Column(String)
     lastname = Column(String)
     surname = Column(String, nullable=True)
@@ -208,7 +261,15 @@ class RequestPerson(Base):
     rejection_reason = Column(Text, nullable=True)
 
     request = relationship("Request", back_populates="request_persons")
-    visit_logs = relationship("VisitLog", back_populates="request_person") # Added back_populates
+    visit_logs = relationship("VisitLog", back_populates="request_person", passive_deletes=True) # Added back_populates
+
+    def __str__(self):
+        if self.iin and self.doc_number is None:
+            return f"{self.lastname} {self.firstname} {self.company}"
+        elif self.iin is not None:
+            return f"{self.lastname} {self.firstname} {self.iin} {self.company}"
+        else:
+            return f"{self.lastname} {self.firstname} {self.doc_number} {self.company}"
 
 
 class VisitLog(Base):
@@ -216,8 +277,8 @@ class VisitLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     # request_id is still relevant to know which overall request this visit belongs to.
-    request_id = Column(Integer, ForeignKey("requests.id"), nullable=False)
-    request_person_id = Column(Integer, ForeignKey("request_persons.id"), nullable=False)
+    request_id = Column(Integer, ForeignKey("requests.id", ondelete="CASCADE"), nullable=False)
+    request_person_id = Column(Integer, ForeignKey("request_persons.id", ondelete="CASCADE"), nullable=False)
     check_in_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     check_out_time = Column(DateTime(timezone=True), nullable=True)
     checkpoint_id = Column(Integer, ForeignKey("checkpoints.id"), nullable=False)
@@ -230,6 +291,17 @@ class VisitLog(Base):
     # after 18 months as per operational requirements. This is typically handled by
     # database maintenance scripts or scheduled jobs, not directly in application API logic
     # unless specific admin endpoints for data management are implemented.
+
+    def __str__(self):
+        # Форматируем время входа
+        check_in = self.check_in_time.strftime("%Y-%m-%d %H:%M")
+        # Если нужно форматировать время выхода — аналогично, с защитой на None
+        if self.check_out_time:
+            check_out = self.check_out_time.strftime("%Y-%m-%d %H:%M")
+        else:
+            check_out = "/*/"
+
+        return f"request_id={self.request_id}, person_id={self.request_person_id}, {check_in}-{check_out}, KPP-{self.checkpoint_id}"
 
 class BlackList(Base):
     __tablename__ = "blacklist"
@@ -262,6 +334,9 @@ class BlackList(Base):
     added_by_user = relationship("User", foreign_keys=[added_by], back_populates="created_blacklist_entries")
     removed_by_user = relationship("User", foreign_keys=[removed_by], back_populates="removed_blacklist_entries")
 
+    def __str__(self):
+        return f"{self.lastname} {self.firstname} {self.iin} {self.company} {self.citizenship} {self.reason} {self.added_by}"
+
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -275,3 +350,6 @@ class Notification(Base):
 
     recipient = relationship("User", back_populates="notifications", foreign_keys=[user_id])
     request = relationship("Request", back_populates="notifications", foreign_keys=[related_request_id])
+
+    def __str__(self):
+        return f"{self.id} {self.user_id} {self.message} {self.is_read}"

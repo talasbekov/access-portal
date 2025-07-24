@@ -16,7 +16,6 @@ from .error_handlers import (
 )
 
 # ------------- Department CRUD -------------
-
 def get_department(db: Session, department_id: int) -> Optional[models.Department]:
     return db.query(models.Department).filter(models.Department.id == department_id).first()
 
@@ -60,7 +59,6 @@ def get_department_users(db: Session, department_id: int, skip: int = 0, limit: 
     ).offset(skip).limit(limit).all()
 
 # ------------- Checkpoint CRUD -------------
-
 def get_checkpoint(db: Session, checkpoint_id: int) -> Optional[models.Checkpoint]:
     return db.query(models.Checkpoint).filter(models.Checkpoint.id == checkpoint_id).first()
 
@@ -92,7 +90,6 @@ def delete_checkpoint(db: Session, db_checkpoint: models.Checkpoint) -> models.C
     return db_checkpoint
 
 # ------------- Role CRUD (Modified) -------------
-
 def get_role(db: Session, role_id: int) -> Optional[models.Role]:
     return db.query(models.Role).filter(models.Role.id == role_id).first()
 
@@ -128,7 +125,6 @@ def delete_role(db: Session, db_role: models.Role) -> models.Role:
     return db_role
 
 # ------------- User CRUD (Modified) -------------
-
 def get_user(db: Session, user_id: int) -> Optional[models.User]:
     return db.query(models.User).options(
         selectinload(models.User.role),
@@ -142,7 +138,7 @@ def get_user_by_username(db: Session, username: str) -> Optional[models.User]:
     ).filter(models.User.username == username).first()
 
 def authenticate_user(db: Session, username: str, password: str) -> Optional[models.User]:
-    from . import auth # For verify_password
+    from . import auth
     user = get_user_by_username(db, username=username)
     if not user:
         return None
@@ -204,7 +200,6 @@ def delete_user(db: Session, db_user: models.User) -> models.User:
     return db_user
 
 # ------------- RequestPerson CRUD -------------
-
 def create_request_person(db: Session, request_person: schemas.RequestPersonBase, request_id: int) -> models.RequestPerson:
     # Assuming RequestPersonBase is used in RequestCreate.request_persons
     db_request_person = models.RequestPerson(
@@ -216,7 +211,6 @@ def create_request_person(db: Session, request_person: schemas.RequestPersonBase
     # db.commit()
     # db.refresh(db_request_person)
     return db_request_person
-
 
 def get_request_person(db: Session, request_person_id: int) -> Optional[models.RequestPerson]:
     return db.query(models.RequestPerson).filter(models.RequestPerson.id == request_person_id).first()
@@ -635,9 +629,7 @@ def _finalize_request_if_all_persons_processed(db: Session, request_id: int, app
 
 
 # ------------- Request CRUD (Modified) -------------
-
 # Role constants are now in constants.py and imported.
-
 def create_request(db: Session, request_in: schemas.RequestCreate, creator: models.User) -> models.Request:
     """
     Создание заявки с автоматической маршрутизацией на одобрение.
